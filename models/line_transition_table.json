@@ -1,0 +1,230 @@
+{
+  "MIXED:ANY:CONTINUE:ODD:MID": {
+    "follow_failure_rate": 0.45,
+    "reverse_failure_rate": 0.5152,
+    "samples": 53,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:MATURE:BREAK:EVEN:MID": {
+    "follow_failure_rate": 0.5714,
+    "reverse_failure_rate": 0.0,
+    "samples": 50,
+    "preferred_action": "REVERSE"
+  },
+  "MIXED:ANY:BREAK:ODD:MID": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.3478,
+    "samples": 137,
+    "preferred_action": "FOLLOW"
+  },
+  "MIXED:ANY:AFTER_BREAK:ODD:MID": {
+    "follow_failure_rate": 0.3163,
+    "reverse_failure_rate": 0.2092,
+    "samples": 1262,
+    "preferred_action": "REVERSE"
+  },
+  "ALT_CYCLE:ANY:AFTER_BREAK:ODD:HIGH": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 1.0,
+    "samples": 155,
+    "preferred_action": "REVERSE"
+  },
+  "ALT_CYCLE:DECAY:AFTER_BREAK:ODD:HIGH": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 1.0,
+    "samples": 137,
+    "preferred_action": "REVERSE"
+  },
+  "STREAK:DECAY:AFTER_BREAK:EVEN:HIGH": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 0.4897,
+    "samples": 145,
+    "preferred_action": "REVERSE"
+  },
+  "MIXED:ANY:AFTER_BREAK:ODD:HIGH": {
+    "follow_failure_rate": 0.9867,
+    "reverse_failure_rate": 0.694,
+    "samples": 307,
+    "preferred_action": "REVERSE"
+  },
+  "BLOCK:MATURE:AFTER_BREAK:EVEN:MID": {
+    "follow_failure_rate": 0.518,
+    "reverse_failure_rate": 1.0,
+    "samples": 140,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:DECAY:AFTER_BREAK:ODD:MID": {
+    "follow_failure_rate": 0.5474,
+    "reverse_failure_rate": 1.0,
+    "samples": 95,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:GROW:EDGE:EVEN:MID": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 0.4419,
+    "samples": 43,
+    "preferred_action": "REVERSE"
+  },
+  "BLOCK:MATURE:BREAK:ODD:LOW": {
+    "follow_failure_rate": 0.5,
+    "reverse_failure_rate": 1.0,
+    "samples": 68,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:DECAY:AFTER_BREAK:EVEN:LOW": {
+    "follow_failure_rate": 0.5205,
+    "reverse_failure_rate": 1.0,
+    "samples": 146,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:DECAY:AFTER_BREAK:ODD:LOW": {
+    "follow_failure_rate": 0.5,
+    "reverse_failure_rate": 1.0,
+    "samples": 92,
+    "preferred_action": "FOLLOW"
+  },
+  "MIXED:ANY:AFTER_BREAK:ODD:LOW": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.0114,
+    "samples": 161,
+    "preferred_action": "FOLLOW"
+  },
+  "STREAK:START:AFTER_BREAK:EVEN:MID": {
+    "follow_failure_rate": 0.0139,
+    "reverse_failure_rate": 0.3746,
+    "samples": 387,
+    "preferred_action": "FOLLOW"
+  },
+  "STREAK:GROW:CONTINUE:ODD:MID": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.359,
+    "samples": 55,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:GROW:AFTER_BREAK:EVEN:MID": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.3191,
+    "samples": 239,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:MATURE:BREAK:ODD:MID": {
+    "follow_failure_rate": 0.5,
+    "reverse_failure_rate": 1.0,
+    "samples": 26,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:GROW:EDGE:EVEN:LOW": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.25,
+    "samples": 100,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:GROW:CONTINUE:ODD:LOW": {
+    "follow_failure_rate": 0.0435,
+    "reverse_failure_rate": 0.2985,
+    "samples": 90,
+    "preferred_action": "FOLLOW"
+  },
+  "ALT_CYCLE:DECAY:BREAK:ODD:HIGH": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 1.0,
+    "samples": 173,
+    "preferred_action": "REVERSE"
+  },
+  "STREAK:DECAY:AFTER_BREAK:ODD:MID": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 0.4956,
+    "samples": 113,
+    "preferred_action": "REVERSE"
+  },
+  "ALT_CYCLE:ANY:AFTER_BREAK:ODD:MID": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 0.4494,
+    "samples": 165,
+    "preferred_action": "REVERSE"
+  },
+  "STREAK:DECAY:BREAK:EVEN:MID": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 0.4602,
+    "samples": 113,
+    "preferred_action": "REVERSE"
+  },
+  "BLOCK:GROW:AFTER_BREAK:EVEN:LOW": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.0196,
+    "samples": 93,
+    "preferred_action": "FOLLOW"
+  },
+  "STREAK:DECAY:BREAK:ODD:LOW": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 0.5385,
+    "samples": 91,
+    "preferred_action": "REVERSE"
+  },
+  "STREAK:DECAY:BREAK:EVEN:LOW": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 0.451,
+    "samples": 51,
+    "preferred_action": "REVERSE"
+  },
+  "STREAK:DECAY:AFTER_BREAK:EVEN:MID": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.5172,
+    "samples": 88,
+    "preferred_action": "FOLLOW"
+  },
+  "STREAK:GROW:BREAK:ODD:MID": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 0.381,
+    "samples": 42,
+    "preferred_action": "REVERSE"
+  },
+  "STREAK:DECAY:BREAK:ODD:MID": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 0.5333,
+    "samples": 60,
+    "preferred_action": "REVERSE"
+  },
+  "BLOCK:GROW:CONTINUE:ODD:MID": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.3462,
+    "samples": 35,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:MATURE:BREAK:EVEN:LOW": {
+    "follow_failure_rate": 0.5862,
+    "reverse_failure_rate": 1.0,
+    "samples": 29,
+    "preferred_action": "FOLLOW"
+  },
+  "BLOCK:MATURE:EDGE:EVEN:LOW": {
+    "follow_failure_rate": 0.3,
+    "reverse_failure_rate": 0.0,
+    "samples": 21,
+    "preferred_action": "REVERSE"
+  },
+  "STREAK:GROW:CONTINUE:ODD:LOW": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.6087,
+    "samples": 24,
+    "preferred_action": "FOLLOW"
+  },
+  "STREAK:GROW:EDGE:EVEN:MID": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.0526,
+    "samples": 27,
+    "preferred_action": "FOLLOW"
+  },
+  "STREAK:GROW:AFTER_BREAK:ODD:MID": {
+    "follow_failure_rate": 0.0,
+    "reverse_failure_rate": 0.5484,
+    "samples": 42,
+    "preferred_action": "FOLLOW"
+  },
+  "ALT_CYCLE:ANY:CONTINUE:ODD:MID": {
+    "follow_failure_rate": 1.0,
+    "reverse_failure_rate": 1.0,
+    "samples": 20,
+    "preferred_action": "REVERSE"
+  }
+}

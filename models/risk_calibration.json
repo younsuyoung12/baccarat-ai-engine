@@ -1,0 +1,17 @@
+{
+  "chaos_cut_high": 0.8418712018101272,
+  "chaos_cut_low": 0.7583195266199082,
+  "pattern_stability_min": 0.36572306035264357,
+  "flow_stability_min": 0.0,
+  "failure_rate_by_zone": {
+    "stable": 0.2248995983935743,
+    "mixed": 0.019559902200488997,
+    "high_chaos": 0.006060606060606061
+  },
+  "meta": {
+    "total_rows": 823,
+    "files": 21,
+    "source": "excel_logs",
+    "min_samples_required": 80
+  }
+}
