@@ -6,7 +6,7 @@ Baccarat Predictor AI Engine (Flask API)
 ----------------------------------------------------
 정책:
 - READY 상태에서는 절대 폴백 금지:
-  - GPT 분석(comment) 누락/ai_ok=False 이면 즉시 예외(500) + 롤백
+  - ai_ok=False 이면 즉시 예외(500) + 롤백
   - future_scenarios 타입/필수키(P/B) 불일치 시 즉시 예외(500)
 - WARMUP 상태(데이터/패턴 준비 미달)에서는 예외로 500을 내지 않는다:
   - bet_side=PASS, ai_ok=False 로 200 OK 반환
@@ -21,6 +21,15 @@ Baccarat Predictor AI Engine (Flask API)
   - (권장) request_id(=클라이언트 이벤트 ID)가 동일하면 서버는 상태 변경 없이 직전 응답을 반환(200)
   - request_id가 없더라도, 매우 짧은 시간 내 동일 winner 연속 요청은 더블클릭으로 간주하고 직전 응답 반환(200)
   - 서버는 라운드 카운터의 단일 진실: len(big_road) 기반 expected_round_id
+
+변경 요약 (2026-03-04, STRICT / NO-LEARNING)
+----------------------------------------------------
+1) meta_learning 의존 제거(학습 사용 안함 정책)
+   - meta_learning import 제거
+   - snapshot/restore/reset에서 meta_learning 관련 상태 제거
+2) rl_learning_enabled 기본 False (학습 비활성)
+   - payload 키는 호환을 위해 유지하되 항상 False로 운용
+----------------------------------------------------
 
 변경 요약 (2025-12-30, TIE CONTRACT HOTFIX)
 ----------------------------------------------------
@@ -46,10 +55,6 @@ Baccarat Predictor AI Engine (Flask API)
    - (호환) next_round_id alias 추가
    - received_round_id는 디버깅 용도로만 유지(요청에 있을 때만 echo)
 ----------------------------------------------------
-
-변경 요약 (2025-12-23) / (2025-12-22) 섹션은 하단 기존 내용의 의미를 유지하되,
-이번 HOTFIX로 round_id 계약이 변경되었음을 최우선으로 반영한다.
-----------------------------------------------------
 """
 
 from __future__ import annotations
@@ -64,7 +69,6 @@ from typing import Any, Dict, List, Optional
 from flask import Flask, jsonify, render_template, request
 
 import features
-import meta_learning
 import pattern
 import road
 import road_leader
@@ -103,16 +107,15 @@ last_response_payload: Optional[Dict[str, Any]] = None
 # 캐시(진실은 len(big_road))
 last_processed_round_id: int = 0
 
-rl_learning_enabled: bool = True
+# ✅ 학습 비활성 (호환 키 유지)
+rl_learning_enabled: bool = False
 
 # ------------------------------------------------------------
 # 중복 요청 방지(서버 단)
 # ------------------------------------------------------------
-# request_id(권장): 동일 ID 재수신이면 상태 변경 없이 직전 응답 반환
 _recent_request_ids: deque[str] = deque(maxlen=200)
 _recent_request_id_set: set[str] = set()
 
-# request_id가 없을 때도 더블클릭을 흡수(인간 입력으로 불가능한 구간만 차단)
 _DOUBLE_CLICK_WINDOW_SEC = 0.35
 _last_accept_mono: float = 0.0
 _last_accept_winner: Optional[str] = None
@@ -166,7 +169,17 @@ def _require_nonempty_str(v: Any, name: str) -> str:
     if not isinstance(v, str) or not v.strip():
         raise ValueError(f"{name} must be non-empty string")
     return v.strip()
-
+def _require(d: Dict[str, Any], key: str) -> Any:
+    """
+    STRICT:
+    - 키 누락 시 즉시 예외
+    - 폴백 금지
+    """
+    if not isinstance(d, dict):
+        raise TypeError(f"_require: d must be dict, got {type(d).__name__}")
+    if key not in d:
+        raise KeyError(f"missing required field: {key}")
+    return d[key]
 
 def _pb_seq_no_ties(big_road: List[str]) -> List[str]:
     return [x for x in big_road if x in ("P", "B")]
@@ -181,7 +194,6 @@ def _compute_pb_stats(big_road: List[str]) -> Dict[str, int]:
 
 
 def _compute_streak_info(big_road: List[str]) -> Dict[str, Any]:
-    # 타이는 streak를 끊지 않는 것으로 처리(스킵)
     seq = big_road
     last = None
     cnt = 0
@@ -202,7 +214,6 @@ def _compute_streak_info(big_road: List[str]) -> Dict[str, Any]:
 
 
 def _ui_ready_flag() -> bool:
-    # UI(패널)는 기록(빅로드)이 1개라도 있으면 표시 가능
     return len(getattr(road, "big_road", []) or []) >= 1
 
 
@@ -221,21 +232,15 @@ def _safe_len_big_road() -> int:
 
 
 def _expected_round_id() -> int:
-    # 서버 단일 진실
     return _safe_len_big_road() + 1
 
 
 def _sync_round_id_from_big_road() -> None:
-    """부팅/복원/UNDO 이후 라운드 카운터를 big_road 길이와 강제 동기화(캐시)."""
     global last_processed_round_id
     last_processed_round_id = _safe_len_big_road()
 
 
 def _validate_big_road_matrix_strict() -> None:
-    """
-    '플레이/뱅커가 같은 칸에 같이 찍히는' 형태를 조기에 탐지한다.
-    big_road_matrix 셀 값이 문자열이고 P와 B가 동시에 포함되면 즉시 실패로 본다.
-    """
     m = getattr(road, "big_road_matrix", None)
     if m is None:
         raise RuntimeError("ROAD_CONTRACT_VIOLATION: road.big_road_matrix is missing")
@@ -256,7 +261,6 @@ def _validate_big_road_matrix_strict() -> None:
                         f"ROADMAP_BROKEN: big_road_matrix cell has both P and B at ({r},{c}): {cell!r}"
                     )
             else:
-                # big road matrix는 문자열/None만 허용(정합성 강제)
                 raise TypeError(
                     f"ROAD_CONTRACT_VIOLATION: big_road_matrix cell must be str/None, got {type(cell).__name__} at ({r},{c})"
                 )
@@ -277,10 +281,6 @@ def _json_error(
 
 
 def _extract_request_id(data: Dict[str, Any]) -> Optional[str]:
-    """
-    권장: 프론트에서 crypto.randomUUID() 등으로 request_id를 보내면
-    서버는 동일 request_id 중복 POST를 상태 변경 없이 흡수한다.
-    """
     v = data.get("request_id") or data.get("client_request_id") or data.get("event_id")
     if v is None:
         return None
@@ -291,7 +291,6 @@ def _extract_request_id(data: Dict[str, Any]) -> Optional[str]:
 
 
 def _mark_request_id_processed(req_id: str) -> None:
-    # deque+set로 관리(최대 200개)
     if req_id in _recent_request_id_set:
         return
     if len(_recent_request_ids) == _recent_request_ids.maxlen:
@@ -309,11 +308,8 @@ def _build_not_ready_payload(reason: str, winner_raw: str) -> Dict[str, Any]:
     pb_stats = _compute_pb_stats(road.big_road)
     streak = _compute_streak_info(road.big_road)
     big_tie_matrix = road.build_big_road_tie_matrix()
-
-    # ✅ UI용 P/B 전용 배열 (Tie 값 제거)
     big_pb = _pb_seq_no_ties(road.big_road)
 
-    # analysis 빈 문자열이면 UI가 패널 전체를 숨기는 경우가 있어 방지
     if winner_raw == "T":
         warmup_analysis = f"TIE: {reason}"
         bet_reason = "TIE"
@@ -342,14 +338,11 @@ def _build_not_ready_payload(reason: str, winner_raw: str) -> Dict[str, Any]:
         "key_features": [],
         "rounds_total": len(road.big_road),
         "shoe_id": current_shoe_id,
-        # 입력 정합성(서버 단일)
         "expected_round_id": _expected_round_id(),
-        "next_round_id": _expected_round_id(),  # alias
-        # UI 렌더용(기록은 항상 보이게)
+        "next_round_id": _expected_round_id(),
         "ui_ready": bool(_ui_ready_flag()),
         "ui_ready_reason": _ui_ready_reason(),
-        # 기존 키들 (UI용 big_road/big는 P/B만)
-        "bead_seq": big_pb,     # ✅ 반드시 추가
+        "bead_seq": big_pb,
         "big_road": big_pb,
         "big_road_matrix": road.big_road_matrix,
         "big_eye": road.big_eye_seq,
@@ -359,7 +352,6 @@ def _build_not_ready_payload(reason: str, winner_raw: str) -> Dict[str, Any]:
         "small_road_matrix": road.small_road_matrix,
         "cockroach_matrix": road.cockroach_matrix,
         "big_tie_matrix": big_tie_matrix,
-        # UI 호환(alias) 키들 (P/B만)
         "big": big_pb,
         "china": {
             "big_eye": road.big_eye_seq,
@@ -371,7 +363,6 @@ def _build_not_ready_payload(reason: str, winner_raw: str) -> Dict[str, Any]:
         "ties": pb_stats["T"],
         "current_streak_type": streak["type"],
         "current_streak_count": streak["count"],
-        # PASS는 집계 제외
         "ai_total": ai_total,
         "ai_correct": ai_correct,
         "ai_win_rate": (ai_correct / ai_total) if ai_total > 0 else 0.0,
@@ -398,8 +389,6 @@ def _snapshot_all_state() -> Dict[str, Any]:
         "last_response_payload": copy.deepcopy(last_response_payload),
         "last_processed_round_id": int(last_processed_round_id),
         "leader_state": road_leader.get_state(),
-        "micro_learning_stats": copy.deepcopy(meta_learning.micro_learning_stats),
-        "meta_learning_stats": copy.deepcopy(meta_learning.meta_learning_stats),
         "pattern_score_history": copy.deepcopy(pattern.pattern_score_history),
         "big_road": copy.deepcopy(road.big_road),
         "big_road_matrix": copy.deepcopy(road.big_road_matrix),
@@ -418,28 +407,23 @@ def _restore_all_state(snap: Dict[str, Any]) -> None:
     global ai_stats, ai_streak_win, ai_streak_lose, ai_recent_results
     global last_prediction, last_response_payload, last_processed_round_id
 
+    if not isinstance(snap, dict):
+        raise TypeError("snapshot must be dict")
+
     current_shoe_id = snap.get("current_shoe_id")
     if current_shoe_id:
-        _write_text_file(SHOE_ID_FILE_PATH, current_shoe_id)
+        _write_text_file(SHOE_ID_FILE_PATH, str(current_shoe_id))
 
-    ai_stats = copy.deepcopy(snap.get("ai_stats", {"total": 0, "correct": 0}))
+    ai_stats = copy.deepcopy(_require_dict(snap.get("ai_stats"), "snap.ai_stats"))
     ai_streak_win = int(snap.get("ai_streak_win", 0))
     ai_streak_lose = int(snap.get("ai_streak_lose", 0))
     ai_recent_results = copy.deepcopy(snap.get("ai_recent_results", []))
 
     last_prediction = copy.deepcopy(snap.get("last_prediction"))
     last_response_payload = copy.deepcopy(snap.get("last_response_payload"))
-
     last_processed_round_id = int(snap.get("last_processed_round_id", 0))
 
     road_leader.set_state(snap.get("leader_state"))
-
-    meta_learning.micro_learning_stats.clear()
-    meta_learning.micro_learning_stats.update(copy.deepcopy(snap.get("micro_learning_stats", {})))
-
-    meta_learning.meta_learning_stats.clear()
-    meta_learning.meta_learning_stats.update(copy.deepcopy(snap.get("meta_learning_stats", {})))
-
     pattern.pattern_score_history = copy.deepcopy(snap.get("pattern_score_history", []))
 
     road.big_road = copy.deepcopy(snap.get("big_road", []))
@@ -477,9 +461,6 @@ def reset_engine_state() -> None:
 
     pattern.pattern_score_history = []
 
-    meta_learning.micro_learning_stats.clear()
-    meta_learning.meta_learning_stats.clear()
-
     ai_stats = {"total": 0, "correct": 0}
     ai_streak_win = 0
     ai_streak_lose = 0
@@ -491,9 +472,8 @@ def reset_engine_state() -> None:
     last_response_payload = None
 
     last_processed_round_id = 0
-    rl_learning_enabled = True
+    rl_learning_enabled = False  # ✅ 학습 비활성 고정
 
-    # 중복 방지 상태 초기화
     _recent_request_ids = deque(maxlen=200)
     _recent_request_id_set = set()
     _last_accept_mono = 0.0
@@ -524,7 +504,7 @@ def _bootstrap_on_startup() -> None:
 
 
 # ------------------------------------------------------------
-# 모드 디버깅용 유틸 (폴백 금지)
+# 모드 디버깅용 유틸 (STRICT)
 # ------------------------------------------------------------
 def build_mode_debug_reason(
     prev_mode: Optional[str],
@@ -538,18 +518,19 @@ def build_mode_debug_reason(
     feat = _require_dict(feat, "feat")
     future = _require_dict(future, "future_scenarios")
 
-    pattern_score = float(feat.get("pattern_score") or 0.0)
-    flow_strength = float(feat.get("flow_strength") or 0.0)
-    chaos_risk = float(feat.get("flow_chaos_risk") or 0.0)
-    reversal_signal = float(feat.get("pattern_reversal_signal") or 0.0)
+    # STRICT: 필수 키는 반드시 존재해야 한다(누락 시 예외)
+    pattern_score = float(_require(feat, "pattern_score"))
+    flow_strength = float(_require(feat, "flow_strength"))
+    chaos_risk = float(_require(feat, "flow_chaos_risk"))
+    reversal_signal = float(_require(feat, "pattern_reversal_signal"))
 
-    fut_p = _require_dict(future.get("P"), "future_scenarios.P")
-    fut_b = _require_dict(future.get("B"), "future_scenarios.B")
+    fut_p = _require_dict(_require(future, "P"), "future_scenarios.P")
+    fut_b = _require_dict(_require(future, "B"), "future_scenarios.B")
 
-    fp_ps = float(fut_p.get("pattern_score") or 0.0)
-    fp_fs = float(fut_p.get("flow_strength") or 0.0)
-    fb_ps = float(fut_b.get("pattern_score") or 0.0)
-    fb_fs = float(fut_b.get("flow_strength") or 0.0)
+    fp_ps = float(_require(fut_p, "pattern_score"))
+    fp_fs = float(_require(fut_p, "flow_strength"))
+    fb_ps = float(_require(fut_b, "pattern_score"))
+    fb_fs = float(_require(fut_b, "flow_strength"))
 
     parts: List[str] = []
 
@@ -603,7 +584,7 @@ def reset_route():
             "status": "ok",
             "shoe_id": current_shoe_id,
             "expected_round_id": _expected_round_id(),
-            "next_round_id": _expected_round_id(),  # alias
+            "next_round_id": _expected_round_id(),
         }
         return jsonify(payload)
     finally:
@@ -632,10 +613,8 @@ def predict_route():
     if winner_raw not in ("P", "B", "T"):
         return _json_error(400, "INVALID_WINNER", "winner must be one of P/B/T")
 
-    # (옵션) 디버깅용: 요청에 round_id가 있어도 더 이상 계약에 포함하지 않음
     received_round_id = data.get("round_id", None)
 
-    # (권장) request_id 기반 중복 방지
     request_id = _extract_request_id(data)
     if request_id:
         if last_response_payload and isinstance(last_response_payload, dict) and last_response_payload.get("request_id") == request_id:
@@ -647,10 +626,8 @@ def predict_route():
             return jsonify(payload), 200
 
         if _is_request_id_processed(request_id):
-            # 마지막 payload가 없으면 안전하게 거절(중복으로 여러 판 반영 방지)
             return _json_error(409, "DUPLICATE_REQUEST_ID", "request_id already processed")
 
-    # request_id가 없으면 더블클릭(초단기 동일 winner 연속 요청) 흡수
     now_mono = time.monotonic()
     if (
         not request_id
@@ -665,25 +642,20 @@ def predict_route():
         payload["next_round_id"] = _expected_round_id()
         return jsonify(payload), 200
 
-    # UNDO 대비 스냅샷
     last_round_snapshot = _snapshot_all_state()
     last_ui_state_before_predict = copy.deepcopy(last_response_payload)
 
     excel_written = False
     try:
-        # 1) Road 업데이트
         before_len = len(road.big_road)
         road.update_road(winner_raw)
         after_len = len(road.big_road)
 
-        # 단일 입력 보장(한 호출에 1개만 추가)
         if after_len != before_len + 1:
             raise RuntimeError(f"ROADMAP_BROKEN: big_road length jump: {before_len} -> {after_len}")
 
-        # 캐시 동기화
         last_processed_round_id = after_len
 
-        # 2) Road 무결성 검사 + 추가 강제 검증(동시 마킹 탐지)
         road_ok, road_error = road.validate_roadmap_integrity()
         if not road_ok:
             app.logger.error("[ROADMAP] integrity failed: %s", road_error)
@@ -695,7 +667,6 @@ def predict_route():
 
         _validate_big_road_matrix_strict()
 
-        # ✅ 2.5) Tie 입력은 "기록(메타/숫자)"만 하고 파이프라인/엑셀 로깅은 절대 호출하지 않는다.
         if winner_raw == "T":
             payload = _build_not_ready_payload("TIE_INPUT (NO BET)", winner_raw)
             payload["received_round_id"] = received_round_id
@@ -703,7 +674,6 @@ def predict_route():
 
             save_engine_state()
 
-            # 성공 처리로 간주(중복 방지 상태 업데이트)
             last_response_payload = payload
             _last_accept_payload_ref = payload
             _last_accept_mono = now_mono
@@ -713,7 +683,6 @@ def predict_route():
 
             return jsonify(payload), 200
 
-        # 3) 이전 예측 적중 처리 (P/B만, PASS는 집계 제외)
         if last_prediction and winner_raw in ("P", "B"):
             prev_side = str(last_prediction.get("bet_side") or "").upper()
             if prev_side in ("P", "B"):
@@ -732,7 +701,6 @@ def predict_route():
                 if len(ai_recent_results) > 10:
                     ai_recent_results.pop(0)
 
-        # 4) WARMUP: PB(타이 제외) 누적 부족이면 GPT 호출/엑셀 기록 금지
         ok, reason = engine_state.get_trade_readiness()
         if not ok:
             payload = _build_not_ready_payload(
@@ -744,7 +712,6 @@ def predict_route():
 
             save_engine_state()
 
-            # 성공 처리로 간주(중복 방지 상태 업데이트)
             last_response_payload = payload
             _last_accept_payload_ref = payload
             _last_accept_mono = now_mono
@@ -754,7 +721,6 @@ def predict_route():
 
             return jsonify(payload), 200
 
-        # 5) 파이프라인 호출 (PatternNotReadyError는 WARMUP으로 처리)
         try:
             pipe = _require_dict(
                 run_ai_pipeline(
@@ -787,18 +753,15 @@ def predict_route():
         ai_ok = bool(ai_dec.get("ai_ok"))
         ai_error = ai_dec.get("error")
 
-        # 6) READY 정책: GPT 분석 필수
         if not ai_ok:
             raise RuntimeError(f"AI_ANALYSIS_FAILED: {ai_error}")
 
         comment = _require_nonempty_str(ai_dec.get("comment"), "ai_decision.comment")
 
-        # 7) future_scenarios 계약 강제
-        future = _require_dict(feat.get("future_scenarios"), "features.future_scenarios")
-        _require_dict(future.get("P"), "features.future_scenarios.P")
-        _require_dict(future.get("B"), "features.future_scenarios.B")
+        future = _require_dict(_require(feat, "future_scenarios"), "features.future_scenarios")
+        _require_dict(_require(future, "P"), "features.future_scenarios.P")
+        _require_dict(_require(future, "B"), "features.future_scenarios.B")
 
-        # 8) bet 계약
         bet_side = str(bet.get("bet_side") or "PASS").upper()
         bet_unit = int(bet.get("bet_unit") or 0)
         bet_reason = str(bet.get("bet_reason") or "")
@@ -808,7 +771,6 @@ def predict_route():
 
         bet_side_display = {"P": "PLAYER", "B": "BANKER", "PASS": "PASS"}[bet_side]
 
-        # 9) GPT raw - 타입 검증
         gpt_raw = pipe.get("gpt_raw") or {}
         if gpt_raw is not None and not isinstance(gpt_raw, dict):
             raise TypeError("pipe.gpt_raw must be dict")
@@ -830,12 +792,10 @@ def predict_route():
                     raise TypeError("gpt_raw.key_features must be list[str]")
                 key_features = [x.strip() for x in kf if isinstance(x, str) and x.strip()]
 
-        # 10) analysis 생성 (comment 기반)
         analysis = comment
         if risk_tags:
             analysis += "\n\n[Risk Tags]\n" + "\n".join(f"- {t}" for t in risk_tags)
 
-        # 11) 모드 변경 디버그
         prev_mode = (last_response_payload or {}).get("enforced_mode") if isinstance(last_response_payload, dict) else None
         next_mode = feat.get("enforced_mode")
         mode_changed = bool(prev_mode != next_mode) if next_mode else False
@@ -843,13 +803,10 @@ def predict_route():
         if mode_changed:
             mode_change_reason = build_mode_debug_reason(prev_mode, next_mode, feat, future)
 
-        # 12) 통계/로드 부가 정보
-        rounds_total = int(feat.get("rounds_total") or len(road.big_road))
+        rounds_total = int(_require(feat, "rounds_total"))
         pb_stats = _compute_pb_stats(road.big_road)
         streak_info = _compute_streak_info(road.big_road)
         big_tie_matrix = road.build_big_road_tie_matrix()
-
-        # ✅ UI용 P/B 전용 배열
         big_pb = _pb_seq_no_ties(road.big_road)
 
         ai_total = int(ai_stats.get("total") or 0)
@@ -857,7 +814,6 @@ def predict_route():
         ai_win_rate_val = (ai_correct / ai_total) if ai_total > 0 else 0.0
         ai_win_rate_pct = int(round(ai_win_rate_val * 100))
 
-        # 13) 직전 예측 갱신
         last_prediction = {
             "bet_side": bet_side,
             "bet_unit": bet_unit,
@@ -866,7 +822,6 @@ def predict_route():
             "enforced_mode": next_mode,
         }
 
-        # 14) 엑셀 로깅 (READY에서만)
         row = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "shoe_id": current_shoe_id,
@@ -911,7 +866,6 @@ def predict_route():
         append_round_log_to_excel(row, current_shoe_id)
         excel_written = True
 
-        # 15) 응답 payload (READY)
         response_payload: Dict[str, Any] = {
             "status": "ok",
             "winner": winner_raw,
@@ -930,16 +884,13 @@ def predict_route():
             "key_features": key_features,
             "rounds_total": rounds_total,
             "shoe_id": current_shoe_id,
-            # 입력 정합성(서버 단일)
             "expected_round_id": _expected_round_id(),
-            "next_round_id": _expected_round_id(),  # alias
+            "next_round_id": _expected_round_id(),
             "received_round_id": received_round_id,
             "request_id": request_id,
-            # UI 렌더용
             "ui_ready": bool(_ui_ready_flag()),
             "ui_ready_reason": _ui_ready_reason(),
-            # ✅ UI용 P/B 전용 배열만 내려보냄 (Tie 값 금지)
-            "bead_seq": big_pb,     # ✅ 반드시 추가
+            "bead_seq": big_pb,
             "big_road": big_pb,
             "big_road_matrix": road.big_road_matrix,
             "big_eye": road.big_eye_seq,
@@ -949,7 +900,6 @@ def predict_route():
             "small_road_matrix": road.small_road_matrix,
             "cockroach_matrix": road.cockroach_matrix,
             "big_tie_matrix": big_tie_matrix,
-            # UI 호환(alias) 키들
             "big": big_pb,
             "china": {
                 "big_eye": road.big_eye_seq,
@@ -961,7 +911,6 @@ def predict_route():
             "ties": pb_stats["T"],
             "current_streak_type": streak_info["type"],
             "current_streak_count": streak_info["count"],
-            # PASS는 집계 제외
             "ai_total": ai_total,
             "ai_correct": ai_correct,
             "ai_win_rate": ai_win_rate_val,
@@ -981,15 +930,12 @@ def predict_route():
             "not_ready_reason": None,
         }
 
-        # feat 키는 중복 방지로 뒤에 병합
         for k, v in feat.items():
             if k not in response_payload:
                 response_payload[k] = v
 
-        # 16) 상태 저장
         save_engine_state()
 
-        # 17) 성공 처리로 간주(중복 방지 상태 업데이트)
         last_response_payload = response_payload
         _last_accept_payload_ref = response_payload
         _last_accept_mono = now_mono
@@ -1041,7 +987,6 @@ def undo_last_round():
         if last_ui_state_before_predict and isinstance(last_ui_state_before_predict, dict):
             last_response_payload = last_ui_state_before_predict
         else:
-            # ✅ UI용 P/B 전용 배열
             big_pb = _pb_seq_no_ties(road.big_road)
 
             last_response_payload = {
@@ -1049,9 +994,9 @@ def undo_last_round():
                 "note": "UNDO_TO_EMPTY_STATE",
                 "shoe_id": current_shoe_id,
                 "rounds_total": len(road.big_road),
-                "bead_seq": big_pb,      # ✅ 이 줄 추가 (본매 핵심)
+                "bead_seq": big_pb,
                 "big_road": big_pb,
-                "big": big_pb,  # UI 호환
+                "big": big_pb,
                 "big_road_matrix": road.big_road_matrix,
                 "big_eye": road.big_eye_seq,
                 "small_road": road.small_road_seq,
@@ -1073,10 +1018,9 @@ def undo_last_round():
 
         save_engine_state()
 
-        # 더블클릭 가드 상태도 현재 payload 기준으로 갱신
         _last_accept_payload_ref = last_response_payload
         _last_accept_mono = time.monotonic()
-        _last_accept_winner = None  # UNDO 직후는 winner 가드 의미 없음
+        _last_accept_winner = None
 
         last_round_snapshot = None
         last_ui_state_before_predict = None
@@ -1098,9 +1042,6 @@ def index():
     return render_template("index.html")
 
 
-# ------------------------------------------------------------
-# 서버 시작 시 1회 부팅
-# ------------------------------------------------------------
 _bootstrap_on_startup()
 
 if __name__ == "__main__":

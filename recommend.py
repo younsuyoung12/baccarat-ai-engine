@@ -1,15 +1,21 @@
-
 # -*- coding: utf-8 -*-
 """
 recommend.py
 ====================================================
 Baccarat Predictor AI Engine v11.x
-Rule-based Betting Recommender (실전 플레이어 기준)
+Rule-based Betting Recommender (실전 플레이어 기준) + GPT 패턴 해석 (Hybrid)
 
 역할
 ------
 - pb_seq(누적 P/B 시퀀스) + features를 기반으로 bet_side / bet_unit / entry_type(PASS/PROBE/NORMAL)를 결정한다.
 - 이 모듈은 룰 기반 엔진이며, 폴백(근거 없는 기본값 방향 생성)을 금지한다.
+
+✅ 운영 원칙(추가)
+------
+STRICT · NO-FALLBACK · FAIL-FAST
+- 필수 입력 누락/스키마 위반/불일치 → 즉시 RuntimeError
+- 조용한 continue/pass 금지
+- 임의 기본값 생성 금지
 
 출력 스키마(유지)
 ------
@@ -23,47 +29,26 @@ Rule-based Betting Recommender (실전 플레이어 기준)
   "pass_reason": optional str
 }
 
-변경 요약 (2026-01-01)
+변경 요약 (2026-03-04)
 ----------------------------------------------------
-1) 방향 생성은 “그림(picture)”이 확인된 경우에만 허용한다.
-   - 그림 정의: (A) Big Road(pb_seq)에서 블록/교대 구조가 확인되거나, (B) pattern.py 결과의 pattern_type이 streak/pingpong/blocks 중 하나.
-   - 그림이 없으면 bet_side=None, entry_type=None (판단 보류; PASS 강제 금지).
-2) 새 슈/초반 보호: pb_len(길이)만으로 방향을 만들지 않으며, 스트릭/트렌드 수치 단독 기반 방향 생성 로직을 제거한다.
-3) Big Road 인식은 “줄/핑퐁 2분법”이 아니라, 단일 스트릭 / 블록 교대 / 핑퐁 교대 / 혼합 블록을 구분한다.
-   - 마지막 1~2개 P/B 값만 추종하는 방향 결정 로직을 제거한다.
-4) 중국점(BigEye/Small/Cockroach)은 방향을 만들지 않는다.
-   - 역할: 현재 Big Road 기반 방향이 “살아있는지/깨졌는지”만 판정.
-   - 붕괴 시: NORMAL→PROBE 강등, PROBE→판단 보류.
-5) pattern.py는 “방향 생성 입구 필터”로 취급한다.
-   - PatternNotReadyError는 파이프라인에서 WARMUP으로 처리되며, 본 모듈은 그 상태에서 방향을 생성하지 않는다.
-   - pattern_score는 NORMAL 승격 판단에만 간접 사용(기존 구조/확증 플래그 유지).
-
-변경 요약 (2026-01-23)
-----------------------------------------------------
-1) models/line_transition_table.json 기반 “FOLLOW/REVERSE 행동 결정” 추가
-   - 기존 그림 인식 / 방향 생성 로직은 절대 변경하지 않는다.
-   - 방향(side) 결정 직후, 줄 상태(Line State)를 산출하고
-     preferred_action(FOLLOW/REVERSE)에 따라 side를 최종 확정한다.
-   - tags에 LINE_KEY / LINE_ACTION / LINE_SRC 를 반드시 포함한다.
-
-2) HOLD 빈도 감소(중국점 붕괴 시 PROBE→HOLD 완화)
-   - CHINA_BROKEN 상황에서 기존: PROBE면 HOLD로 판단 보류
-   - 변경: PROBE 유지(유닛 1 고정), 이유/태그에 명시
-   - 주의: 방향 생성/그림 로직은 건드리지 않는다.
-
-3) leader_trust_state 기반 “NORMAL 승격 보조 게이트” 추가
-   - 기존 NORMAL 후보(allow_normal=True)인 경우에만 leader_trust_state를 참고한다.
-   - leader_trust_state == STRONG 일 때만 NORMAL 유지
-   - 그 외(NONE/WEAK/MID/누락)는 NORMAL → PROBE로 강등
-   - 방향(side) 변경 금지, leader_signal/leader_source/can_override_side 사용 금지
-----------------------------------------------------
+1) ✅ Hybrid Engine + GPT 패턴 해석 결합:
+   - 최근 5판(P/B only) + runs + pattern_type + flow_state + china_state + future china roads 를 GPT에 전달
+   - engine_weight(0.6) + gpt_confidence 를 점수 결합하여 최종 P/B 산출
+   - |scoreP - scoreB| < 0.1 → HOLD (bet_side=None, bet_unit=0)
+2) ✅ 5판 안전장치:
+   - "최근 P/B 5개"가 확보되지 않으면 절대 방향을 내지 않는다(HOLD).
+3) ✅ 학습 기반 line_transition_table(learned) 사용 중지:
+   - 사용자의 "학습 사용 안함" 정책에 맞춰 line_transition_table 적용을 비활성화한다.
+   - 태그에는 LINE_*를 DISABLED로 명시한다.
+4) ✅ UI 단순화를 위한 출력 정책:
+   - UI에는 bet_side(P/B)만 보이도록, 출력 entry_type은 None으로 반환(표시 단순화 목적).
+   - 내부 FlowLifeContext 상태 관리를 위해 internal_entry_type은 유지한다(외부 표시와 분리).
 
 절대 금지(유지)
 ----------------------------------------------------
 - 확률(%) 예측 또는 반환
-- 다음 수 예측 표현
-- 추천/우세/맞출 수 있다는 표현
-- recommend.py 외 파일 수정
+- 다음 수 예측 표현(맞춘다/우세 등)
+- recommend.py 외 파일 수정(이 파일 단독 변경 요청에 한함)
 - engine_state / road / feature 계산 로직 침범
 """
 
@@ -73,6 +58,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import json
 import os
+
+from gpt_engine import gpt_decide, GptDecision
 
 
 # ----------------------------------------------------
@@ -101,8 +88,16 @@ NORMAL_MIN_BEAUTY = 60.0
 NORMAL_MAX_CHAOS = 0.60
 NORMAL_MIN_STABILITY = 0.40
 
-# Line transition table (history action)
+# Line transition table (history action) — 학습 기반 기능. (현재 비활성)
 LINE_TABLE_PATH = os.path.join("models", "line_transition_table.json")
+ENABLE_LEARNED_LINE_TABLE = False  # ✅ 학습 사용 안함 정책: 항상 False
+
+# Hybrid weights
+ENGINE_WEIGHT = 0.60
+EDGE_HOLD_THRESHOLD = 0.10  # |scoreP - scoreB| < 0.1 => HOLD
+
+# 5판 안전장치 (P/B only 기준)
+MIN_PB_FOR_GPT = 5
 
 
 # ----------------------------------------------------
@@ -119,10 +114,10 @@ class FlowLifeContext:
     # pending bet from previous call (to be resolved on next call)
     pending_bet_side: Optional[str] = None
     pending_entry_type: Optional[str] = None
-    pending_at_pb_len: Optional[int] = None  # pb_len at the time of decision
+    pending_at_pb_len: Optional[int] = None  # pb_len at the time of decision (PB only 기준)
 
     # guard for shoe reset / call skipping
-    last_seen_pb_len: int = 0
+    last_seen_pb_len: int = 0  # PB only len 기준으로 운용
 
     # last seen shoe signature (meta 기반 새 슈 감지용)
     last_seen_shoe_sig: Optional[str] = None
@@ -185,7 +180,9 @@ def _flow_resolve_pending(flow_ctx: FlowLifeContext, pb_seq: List[str], shoe_sig
     """
     dbg: Dict[str, Any] = {"resolved": False}
 
-    pb_len = len(pb_seq)
+    pb_only = _pb_clean(pb_seq)
+    pb_len = len(pb_only)
+
     # shoe change: shoe_sig 우선, 없으면 pb_len 감소로 감지
     if shoe_sig and flow_ctx.last_seen_shoe_sig and shoe_sig != flow_ctx.last_seen_shoe_sig:
         dbg["shoe_reset"] = "shoe_sig_changed"
@@ -199,9 +196,9 @@ def _flow_resolve_pending(flow_ctx: FlowLifeContext, pb_seq: List[str], shoe_sig
 
     if flow_ctx.pending_bet_side in (SIDE_P, SIDE_B) and flow_ctx.pending_entry_type in (ENTRY_PROBE, ENTRY_NORMAL):
         at_pb_len = int(flow_ctx.pending_at_pb_len or 0)
-        # pending은 “결정 당시 pb_len” 기준으로 “그 다음 1개 결과”에서만 해석한다.
+        # pending은 “결정 당시 pb_len(PB only)” 기준으로 “그 다음 1개 PB 결과”에서만 해석한다.
         if pb_len >= at_pb_len + 1:
-            last_winner = str(pb_seq[-1]).upper() if pb_len > 0 else None
+            last_winner = str(pb_only[-1]).upper() if pb_len > 0 else None
             hit = bool(last_winner == flow_ctx.pending_bet_side)
             dbg.update(
                 {
@@ -251,9 +248,14 @@ def _require(d: Dict[str, Any], key: str) -> Any:
 
 def _as_float(v: Any, name: str) -> float:
     try:
-        return float(v)
+        x = float(v)
     except Exception as e:
         raise TypeError(f"{name} must be float-compatible") from e
+    if not (x == x):  # NaN
+        raise RuntimeError(f"{name} must be finite (NaN)")
+    if x in (float("inf"), float("-inf")):
+        raise RuntimeError(f"{name} must be finite (inf)")
+    return float(x)
 
 
 def _as_int(v: Any, name: str) -> int:
@@ -264,17 +266,74 @@ def _as_int(v: Any, name: str) -> int:
 
 
 # ----------------------------------------------------
-# Helpers: Big Road picture detection (structure-based)
+# Helpers: PB only extraction
 # ----------------------------------------------------
 
 def _pb_clean(pb_seq: List[str]) -> List[str]:
     out: List[str] = []
+    if not isinstance(pb_seq, list):
+        raise TypeError("pb_seq must be list")
     for x in pb_seq:
         s = str(x).upper()
         if s in (SIDE_P, SIDE_B):
             out.append(s)
     return out
 
+
+def _last5_and_runs_strict(pb_seq: List[str]) -> Tuple[str, List[int]]:
+    """
+    STRICT:
+    - P/B only 기준으로 last5(길이=5)와 runs를 계산한다.
+    - P/B가 5개 미만이면 RuntimeError가 아니라 '상위 정책'에서 HOLD 처리한다(5판 안전장치).
+    """
+    pb_only = _pb_clean(pb_seq)
+    if len(pb_only) < MIN_PB_FOR_GPT:
+        raise RuntimeError("PB_ONLY_LEN_LT_5")
+    last5 = "".join(pb_only[-5:])  # 길이=5 보장
+    # runs: 전체 PB only로 계산 후 최근 3개만
+    runs: List[int] = []
+    last: Optional[str] = None
+    cnt = 0
+    for s in pb_only:
+        if s != last:
+            if cnt > 0:
+                runs.append(cnt)
+            cnt = 1
+            last = s
+        else:
+            cnt += 1
+    if cnt > 0:
+        runs.append(cnt)
+    if not runs:
+        raise RuntimeError("runs empty (unexpected)")
+    return last5, runs[-3:]
+
+
+def _derive_pattern_type_for_gpt(pattern_type: Optional[str], br_type: str) -> str:
+    """
+    STRICT:
+    - pattern_type이 있으면 그대로 사용(정규화).
+    - 없으면 BigRoad 구조(br_type)에서 deterministic하게 파생.
+    - 둘 다 불가능하면 예외.
+    """
+    if isinstance(pattern_type, str) and pattern_type.strip():
+        pt = pattern_type.strip().lower()
+        return pt
+
+    bt = str(br_type or "").strip().upper()
+    if bt == "PINGPONG":
+        return "pingpong"
+    if bt == "BLOCKS":
+        return "blocks"
+    if bt == "MIXED_BLOCKS":
+        return "mixed"
+    # picture가 있는데 pattern_type까지 없으면 파이프라인 입력 계약이 약한 상태
+    raise RuntimeError("pattern_type missing and cannot derive from BigRoad structure")
+
+
+# ----------------------------------------------------
+# Helpers: Big Road picture detection (structure-based)
+# ----------------------------------------------------
 
 def _rle_runs(seq: List[str]) -> List[Tuple[str, int]]:
     if not seq:
@@ -350,8 +409,7 @@ def _analyze_bigroad_structure(pb_seq: List[str]) -> Dict[str, Any]:
         info["expected_next_side"] = SIDE_B if seq[-1] == SIDE_P else SIDE_P
         return info
 
-    # 2) blocks (11->22, 111->222, 112211 ...)
-    #    - 최근 2개 run이 모두 2 이상이면 블록 교대 구조로 인정
+    # 2) blocks
     if len(runs) >= 2:
         (s1, l1), (s2, l2) = runs[-2], runs[-1]
         if s1 in (SIDE_P, SIDE_B) and s2 in (SIDE_P, SIDE_B) and s1 != s2 and l1 >= 2 and l2 >= 2:
@@ -359,15 +417,13 @@ def _analyze_bigroad_structure(pb_seq: List[str]) -> Dict[str, Any]:
             info["picture_present"] = True
             info["structure_type"] = "BLOCKS"
             info["target_block_len"] = target
-            # 블록 길이가 아직 다 안 찼으면 유지, 다 찼으면 전환
             if target and l2 < target:
                 info["expected_next_side"] = s2
             else:
                 info["expected_next_side"] = s1
             return info
 
-    # 3) mixed blocks (12122 등): 교대 중에 2+블록이 끼어드는 형태
-    #    - 최근 run들에서 (len==1과 len>=2)가 공존하고, run의 방향 전환이 반복될 때만 인정
+    # 3) mixed blocks
     if len(runs) >= 4:
         tail = runs[-4:]
         lens = [ln for _, ln in tail]
@@ -387,8 +443,7 @@ def _analyze_bigroad_structure(pb_seq: List[str]) -> Dict[str, Any]:
                 info["expected_next_side"] = prev_side
             return info
 
-    # strict random: 최근 구간에 연속이 없고(전부 1-run), pingpong도 아님
-    # (판단 보류로만 사용)
+    # strict random
     if len(runs) >= 6 and all(ln == 1 for _, ln in runs[-6:]) and not _is_alternating(seq[-6:]):
         info["is_random"] = True
         info["structure_type"] = "STRICT_RANDOM"
@@ -457,7 +512,6 @@ def _decide_side_from_picture(pb_seq: List[str], bigroad_info: Dict[str, Any], p
             tags.append("SIDE_SRC=PATTERN_STREAK")
             return last, tags
         if pt == "blocks":
-            # blocks는 run-length 기반 추정이 불가능하면 방향을 만들지 않는다.
             runs = _rle_runs(seq)
             if len(runs) >= 2 and runs[-1][1] >= 2 and runs[-2][1] >= 2:
                 target = _infer_target_block_len(runs) or 2
@@ -475,153 +529,6 @@ def _decide_side_from_picture(pb_seq: List[str], bigroad_info: Dict[str, Any], p
 
 
 # ----------------------------------------------------
-# NEW: Line state + History action (FOLLOW/REVERSE)
-# ----------------------------------------------------
-
-_LINE_TABLE_CACHE: Optional[Dict[str, Any]] = None
-_LINE_TABLE_ERR: Optional[str] = None
-
-
-def _load_line_table() -> Dict[str, Any]:
-    """
-    models/line_transition_table.json 로드 (캐시)
-    - 파일이 없거나 파싱 실패 시: 빈 dict 반환 + 내부 에러 문자열 저장
-    - 엔진 크래시 방지 목적(명시 태그로 노출)
-    """
-    global _LINE_TABLE_CACHE, _LINE_TABLE_ERR
-    if _LINE_TABLE_CACHE is not None:
-        return _LINE_TABLE_CACHE
-
-    try:
-        if not os.path.exists(LINE_TABLE_PATH):
-            _LINE_TABLE_ERR = "FILE_NOT_FOUND"
-            _LINE_TABLE_CACHE = {}
-            return _LINE_TABLE_CACHE
-
-        with open(LINE_TABLE_PATH, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-
-        if not isinstance(obj, dict):
-            _LINE_TABLE_ERR = "INVALID_ROOT_TYPE"
-            _LINE_TABLE_CACHE = {}
-            return _LINE_TABLE_CACHE
-
-        _LINE_TABLE_CACHE = obj
-        _LINE_TABLE_ERR = None
-        return _LINE_TABLE_CACHE
-
-    except Exception as e:
-        _LINE_TABLE_ERR = f"LOAD_ERROR:{type(e).__name__}"
-        _LINE_TABLE_CACHE = {}
-        return _LINE_TABLE_CACHE
-
-
-def _flip_side(side: str) -> str:
-    return SIDE_B if side == SIDE_P else SIDE_P
-
-
-def _phase_from_runlen(run_len: int) -> str:
-    if run_len <= 2:
-        return "START"
-    if run_len <= 4:
-        return "GROW"
-    return "MATURE"
-
-
-def _infer_line_type_phase(pb_seq: List[str]) -> Tuple[str, str, Dict[str, Any]]:
-    """
-    LINE_TYPE  : STREAK / BLOCK / ALT_CYCLE / MIXED
-    LINE_PHASE : START / GROW / MATURE
-    """
-    seq = _pb_clean(pb_seq)
-    runs = _rle_runs(seq)
-    dbg: Dict[str, Any] = {"runs": runs[-6:] if runs else []}
-
-    if not runs:
-        return "MIXED", "START", dbg
-
-    _, cur_len = runs[-1]
-    phase = _phase_from_runlen(int(cur_len))
-
-    # ALT_CYCLE: 최근 4개가 완전 교대
-    if len(seq) >= 4 and _is_alternating(seq[-4:]):
-        return "ALT_CYCLE", "START", dbg  # 교대는 run_len=1 기반으로 START 고정
-
-    # BLOCK: 최근 2개 run이 2 이상이며 서로 교대
-    if len(runs) >= 2:
-        (s1, l1), (s2, l2) = runs[-2], runs[-1]
-        if s1 != s2 and int(l1) >= 2 and int(l2) >= 2:
-            return "BLOCK", phase, dbg
-
-    # STREAK: 현재 run이 3 이상
-    if int(cur_len) >= 3:
-        return "STREAK", phase, dbg
-
-    return "MIXED", phase, dbg
-
-
-def _choose_line_action(line_type: str, line_phase: str) -> Tuple[str, str, str]:
-    """
-    returns: (line_key_used, action, src)
-    action: FOLLOW / REVERSE
-    src   : HIST_TABLE / HIST_TABLE_ANY / DEFAULT_FOLLOW / TABLE_MISSING
-    """
-    table = _load_line_table()
-
-    key = f"{line_type}:{line_phase}"
-    key_any = f"{line_type}:ANY"
-
-    # table missing / invalid
-    if not table:
-        if _LINE_TABLE_ERR is not None:
-            return key, "FOLLOW", f"TABLE_MISSING({_LINE_TABLE_ERR})"
-        return key, "FOLLOW", "DEFAULT_FOLLOW"
-
-    # exact key
-    if key in table and isinstance(table.get(key), dict):
-        pref = str(table[key].get("preferred_action") or "").upper().strip()
-        if pref in ("FOLLOW", "REVERSE"):
-            return key, pref, "HIST_TABLE"
-
-    # ANY fallback
-    if key_any in table and isinstance(table.get(key_any), dict):
-        pref = str(table[key_any].get("preferred_action") or "").upper().strip()
-        if pref in ("FOLLOW", "REVERSE"):
-            return key_any, pref, "HIST_TABLE_ANY"
-
-    # if table exists but no key matched -> explicit default
-    return key, "FOLLOW", "DEFAULT_FOLLOW"
-
-
-def _apply_follow_reverse_action(
-    pb_seq: List[str],
-    side: str,
-) -> Tuple[str, Dict[str, Any]]:
-    """
-    side(그림 기반 방향) 결정 이후,
-    line_transition_table 기반 preferred_action(FOLLOW/REVERSE)로 side를 최종 확정한다.
-    """
-    line_type, line_phase, dbg = _infer_line_type_phase(pb_seq)
-    used_key, action, src = _choose_line_action(line_type, line_phase)
-
-    final_side = side
-    if action == "REVERSE":
-        final_side = _flip_side(side)
-
-    out_dbg: Dict[str, Any] = {
-        "line_type": line_type,
-        "line_phase": line_phase,
-        "line_key": used_key,
-        "line_action": action,
-        "line_src": src,
-        "line_dbg": dbg,
-        "side_before": side,
-        "side_after": final_side,
-    }
-    return final_side, out_dbg
-
-
-# ----------------------------------------------------
 # Helpers: China roads (validation only; never direction)
 # ----------------------------------------------------
 
@@ -629,31 +536,39 @@ def _last_rb_from_matrix(matrix_json: Any) -> Optional[str]:
     """
     matrix_json: list[list[str]] (JSON string or python list)
     Returns last non-empty mark among ("R","B").
+    STRICT:
+    - 형식이 파싱 불가하면 RuntimeError (조용히 None 반환 금지)
     """
-    mat = None
     if matrix_json is None:
         return None
+
+    mat: Any
     if isinstance(matrix_json, str):
         try:
             mat = json.loads(matrix_json)
-        except Exception:
-            return None
+        except Exception as e:
+            raise RuntimeError(f"china matrix json parse failed: {type(e).__name__}") from e
     elif isinstance(matrix_json, list):
         mat = matrix_json
     else:
-        return None
+        raise RuntimeError("china matrix must be json string or list")
 
-    try:
-        # scan from end
-        for col in reversed(mat):
-            if not isinstance(col, list):
+    if not isinstance(mat, list):
+        raise RuntimeError("china matrix root must be list")
+
+    # scan from end
+    for col in reversed(mat):
+        if not isinstance(col, list):
+            raise RuntimeError("china matrix column must be list")
+        for cell in reversed(col):
+            c = str(cell).upper().strip()
+            if c in ("R", "B"):
+                return c
+            if c == "":
                 continue
-            for cell in reversed(col):
-                c = str(cell).upper().strip()
-                if c in ("R", "B"):
-                    return c
-    except Exception:
-        return None
+            # 허용: 빈값 외의 값이 들어오면 스키마 위반
+            raise RuntimeError(f"china matrix contains invalid cell: {c!r}")
+
     return None
 
 
@@ -661,10 +576,21 @@ def _china_b_count(features: Dict[str, Any]) -> Tuple[int, Dict[str, Optional[st
     """
     중국점은 색(R/B)만 사용하며, Bank/Player 방향과 무관하다.
     - 붕괴 판정용으로만 B 카운트를 사용(간단/보수적).
+    STRICT:
+    - 관련 키가 누락되면 예외(계약 위반).
     """
-    big_eye_last = _last_rb_from_matrix(features.get("big_eye_matrix_json") or features.get("big_eye_matrix"))
-    small_last = _last_rb_from_matrix(features.get("small_road_matrix_json") or features.get("small_road_matrix"))
-    cock_last = _last_rb_from_matrix(features.get("cockroach_matrix_json") or features.get("cockroach_matrix"))
+    # 키는 반드시 존재해야 한다(없으면 파이프라인 불일치)
+    # json string 또는 list 모두 허용
+    big_eye_src = features.get("big_eye_matrix_json") if "big_eye_matrix_json" in features else features.get("big_eye_matrix")
+    small_src = features.get("small_road_matrix_json") if "small_road_matrix_json" in features else features.get("small_road_matrix")
+    cock_src = features.get("cockroach_matrix_json") if "cockroach_matrix_json" in features else features.get("cockroach_matrix")
+
+    if big_eye_src is None or small_src is None or cock_src is None:
+        raise RuntimeError("missing china matrices in features (big_eye/small/cockroach)")
+
+    big_eye_last = _last_rb_from_matrix(big_eye_src)
+    small_last = _last_rb_from_matrix(small_src)
+    cock_last = _last_rb_from_matrix(cock_src)
 
     marks = {
         "big_eye_last": big_eye_last,
@@ -684,6 +610,69 @@ def _china_health_state(china_bcnt: int, china_marks: Dict[str, Optional[str]]) 
     if china_bcnt == 1:
         return "WEAK"
     return "ALIVE"
+
+
+# ----------------------------------------------------
+# Future China Roads (STRICT)
+# ----------------------------------------------------
+
+def _extract_future_scenarios_strict(features: Dict[str, Any], gpt_analysis: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    STRICT:
+    - future_scenarios는 features 또는 gpt_analysis 중 '정확히 하나'에 존재해야 한다.
+      (둘 다 있으면 내용이 동일해야 한다)
+    - future_scenarios는 {"P": {...}, "B": {...}} 형태여야 한다.
+    - 각 {...}는 big_eye/small_road/cockroach 값을 제공해야 하며 R/B/None만 허용.
+    """
+    fs_from_features = features.get("future_scenarios") if isinstance(features, dict) else None
+    fs_from_analysis = gpt_analysis.get("future_scenarios") if isinstance(gpt_analysis, dict) else None
+
+    if fs_from_features is None and fs_from_analysis is None:
+        raise RuntimeError("future_scenarios missing (required)")
+
+    if fs_from_features is not None and fs_from_analysis is not None:
+        if fs_from_features != fs_from_analysis:
+            raise RuntimeError("future_scenarios mismatch between features and gpt_analysis")
+        fs = fs_from_features
+    else:
+        fs = fs_from_features if fs_from_features is not None else fs_from_analysis
+
+    if not isinstance(fs, dict):
+        raise RuntimeError("future_scenarios must be dict")
+
+    if "P" not in fs or "B" not in fs:
+        raise RuntimeError("future_scenarios must contain keys 'P' and 'B'")
+
+    fP = fs["P"]
+    fB = fs["B"]
+    if not isinstance(fP, dict) or not isinstance(fB, dict):
+        raise RuntimeError("future_scenarios.P/B must be dict")
+
+    def pick_field(d: Dict[str, Any], keys: List[str], name: str) -> Optional[str]:
+        present = [k for k in keys if k in d]
+        if len(present) != 1:
+            raise RuntimeError(f"future scenario field '{name}' must exist in exactly one of {keys} (present={present})")
+        v = d[present[0]]
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise RuntimeError(f"future scenario '{name}' must be string or null")
+        s = v.strip().upper()
+        if s not in ("R", "B"):
+            raise RuntimeError(f"future scenario '{name}' must be 'R' or 'B' or null")
+        return s
+
+    future_if_P = {
+        "big_eye": pick_field(fP, ["big_eye", "bigEye"], "big_eye"),
+        "small": pick_field(fP, ["small_road", "smallRoad", "small"], "small"),
+        "cockroach": pick_field(fP, ["cockroach", "cock"], "cockroach"),
+    }
+    future_if_B = {
+        "big_eye": pick_field(fB, ["big_eye", "bigEye"], "big_eye"),
+        "small": pick_field(fB, ["small_road", "smallRoad", "small"], "small"),
+        "cockroach": pick_field(fB, ["cockroach", "cock"], "cockroach"),
+    }
+    return future_if_P, future_if_B
 
 
 # ----------------------------------------------------
@@ -732,7 +721,7 @@ def _should_allow_normal(
     - 그 외: 기존 경로(구조/확증 플래그) 유지
     """
     tags: List[str] = []
-    pb_len = len(pb_seq)
+    pb_len = len(_pb_clean(pb_seq))
 
     if pb_len < FLOW_NORMAL_MIN_PBLEN:
         tags.append("NORMAL_DENY_EARLY_SHOE")
@@ -769,6 +758,42 @@ def _should_allow_normal(
 
 
 # ----------------------------------------------------
+# Hybrid Decision (Engine + GPT)
+# ----------------------------------------------------
+
+def _hybrid_decide(engine_side: str, gpt: GptDecision) -> Optional[str]:
+    """
+    STRICT:
+    - engine_side: P/B only
+    - gpt.side: P/B/HOLD
+    - 반환: P/B or None(HOLD)
+    """
+    if engine_side not in (SIDE_P, SIDE_B):
+        raise RuntimeError(f"invalid engine_side: {engine_side!r}")
+
+    score_p = 0.0
+    score_b = 0.0
+
+    if engine_side == SIDE_P:
+        score_p += ENGINE_WEIGHT
+    else:
+        score_b += ENGINE_WEIGHT
+
+    if gpt.side == SIDE_P:
+        score_p += float(gpt.confidence)
+    elif gpt.side == SIDE_B:
+        score_b += float(gpt.confidence)
+    elif gpt.side == "HOLD":
+        pass
+    else:
+        raise RuntimeError(f"invalid gpt.side: {gpt.side!r}")
+
+    if abs(score_p - score_b) < EDGE_HOLD_THRESHOLD:
+        return None
+    return SIDE_P if score_p > score_b else SIDE_B
+
+
+# ----------------------------------------------------
 # Main API
 # ----------------------------------------------------
 
@@ -800,7 +825,38 @@ def recommend_bet(
     pattern_symmetry = _as_float(_require(features, "pattern_symmetry"), "pattern_symmetry")
     pattern_energy = _as_float(_require(features, "pattern_energy"), "pattern_energy")
 
-    pb_len = len(pb_seq)
+    pb_only = _pb_clean(pb_seq)
+    pb_len = len(pb_only)
+
+    # ----------------------------------------------------
+    # 5판 안전장치: 최근 P/B 5개 미만이면 절대 방향을 내지 않는다.
+    # ----------------------------------------------------
+    if pb_len < MIN_PB_FOR_GPT:
+        flow_ctx.reset_dead()
+        flow_ctx.last_seen_pb_len = pb_len
+
+        tags: List[str] = ["HOLD", "WARMUP_PBLEN_LT_5"]
+        return {
+            "bet_side": None,
+            "bet_unit": 0,
+            "entry_type": None,
+            "reason": "HOLD (WARMUP_PBLEN_LT_5)",
+            "tags": tags,
+            "metrics": {
+                "rounds_total": rounds_total,
+                "pb_len": pb_len,
+                "pb_ratio": pb_ratio,
+                "chaos": chaos,
+                "stability": stability,
+                "beauty_score": beauty_score,
+                "pattern_score": pattern_score,
+                "pattern_symmetry": pattern_symmetry,
+                "pattern_energy": pattern_energy,
+                "flow_life_state": flow_ctx.state,
+                "flow_life_resolve_dbg": flow_resolve_dbg,
+            },
+            "pass_reason": "HOLD_WARMUP_PBLEN_LT_5",
+        }
 
     # ----------------------------------------------------
     # Picture gate: Big Road structure OR pattern_type(streak/pingpong/blocks)
@@ -815,20 +871,19 @@ def recommend_bet(
 
     picture_present = bool(br_pic or pt_ok)
 
-    # side decision is allowed only when picture_present is True
     side: Optional[str] = None
     side_tags: List[str] = []
     if picture_present:
         side, side_tags = _decide_side_from_picture(pb_seq, bigroad_info, pattern_type)
 
     # ----------------------------------------------------
-    # HOLD 1) 그림 미형성 / 방향 미결정 (정상 상태)
+    # HOLD: 그림 미형성 / 방향 미결정
     # ----------------------------------------------------
     if not picture_present or side not in (SIDE_P, SIDE_B):
         flow_ctx.reset_dead()
         flow_ctx.last_seen_pb_len = pb_len
 
-        tags: List[str] = []
+        tags = []
         if br_is_random:
             tags.extend(["HOLD", "STRICT_RANDOM"])
         else:
@@ -838,13 +893,11 @@ def recommend_bet(
             tags.append(f"PTYPE={pattern_type}")
         tags.extend(side_tags)
 
-        # 줄 상태 태그는 참고용(행동 결정을 못 하는 경우)
-        line_type, line_phase, _ = _infer_line_type_phase(pb_seq)
-        tags.append(f"LINE_KEY={line_type}:{line_phase}")
-        tags.append("LINE_ACTION=NA")
-        tags.append("LINE_SRC=NA")
+        # 학습 기반 라인 테이블 비활성 태그
+        tags.append("LINE_KEY=DISABLED")
+        tags.append("LINE_ACTION=DISABLED")
+        tags.append("LINE_SRC=DISABLED")
 
-        # leader trust는 로그용으로만 남김(결정에는 사용 불가)
         leader_trust_state = _extract_leader_trust_state(leader_state)
         tags.append(f"LEADER_TRUST={leader_trust_state}")
 
@@ -882,19 +935,7 @@ def recommend_bet(
 
     tags: List[str] = []
     tags.append(f"BR_TYPE={br_type}")
-    if pattern_type is not None:
-        tags.append(f"PTYPE={pattern_type}")
     tags.extend(side_tags)
-
-    # ----------------------------------------------------
-    # NEW: Apply FOLLOW/REVERSE action from history table
-    # ----------------------------------------------------
-    side_before = str(side)
-    side, line_dbg = _apply_follow_reverse_action(pb_seq=pb_seq, side=str(side))
-
-    tags.append(f"LINE_KEY={line_dbg['line_key']}")
-    tags.append(f"LINE_ACTION={line_dbg['line_action']}")
-    tags.append(f"LINE_SRC={line_dbg['line_src']}")
 
     # ----------------------------------------------------
     # Leader trust (로그/게이트용)
@@ -903,7 +944,7 @@ def recommend_bet(
     tags.append(f"LEADER_TRUST={leader_trust_state}")
 
     # ----------------------------------------------------
-    # China roads: validate only (never direction)
+    # China roads (STRICT): validate only
     # ----------------------------------------------------
     china_bcnt, china_marks = _china_b_count(features)
     china_state = _china_health_state(china_bcnt, china_marks)
@@ -911,7 +952,85 @@ def recommend_bet(
     tags.append(f"CHINA_BCNT={china_bcnt}")  # B=Black(중국점 색), not Banker
 
     # ----------------------------------------------------
-    # NORMAL eligibility (gated) + base entry selection
+    # Future China Roads (STRICT): required
+    # ----------------------------------------------------
+    future_if_P, future_if_B = _extract_future_scenarios_strict(features, gpt_analysis)
+
+    # ----------------------------------------------------
+    # Prepare GPT input (STRICT)
+    # ----------------------------------------------------
+    last5, runs = _last5_and_runs_strict(pb_seq)
+
+    pt_for_gpt = _derive_pattern_type_for_gpt(pattern_type, br_type)
+    # flow_state는 recommend 내부 lifecycle state 사용(외부 flow.py 상태와 혼동 금지)
+    flow_state_for_gpt = str(flow_ctx.state).upper()
+    if flow_state_for_gpt not in (FLOW_DEAD, FLOW_TEST, FLOW_ALIVE):
+        raise RuntimeError(f"invalid flow_state_for_gpt: {flow_state_for_gpt!r}")
+
+    gpt_input: Dict[str, Any] = {
+        "last5": last5,
+        "runs": runs,
+        "pattern_type": pt_for_gpt,
+        "flow_state": flow_state_for_gpt,
+        "china_state": str(china_state).upper(),
+        "future_if_P": future_if_P,
+        "future_if_B": future_if_B,
+    }
+
+    # ----------------------------------------------------
+    # GPT decision (STRICT): no fallback
+    # ----------------------------------------------------
+    gpt_dec: GptDecision = gpt_decide(gpt_input)
+
+    # ----------------------------------------------------
+    # Hybrid combine: engine(side) + GPT
+    # ----------------------------------------------------
+    engine_side = str(side)
+    final_side = _hybrid_decide(engine_side=engine_side, gpt=gpt_dec)
+
+    # 학습 기반 line table 비활성 태그
+    tags.append("LINE_KEY=DISABLED")
+    tags.append("LINE_ACTION=DISABLED")
+    tags.append("LINE_SRC=DISABLED")
+
+    # ----------------------------------------------------
+    # HOLD if weak edge
+    # ----------------------------------------------------
+    if final_side is None:
+        flow_ctx.reset_dead()
+        flow_ctx.last_seen_pb_len = pb_len
+        tags.append("HOLD_EDGE_TOO_SMALL")
+        return {
+            "bet_side": None,
+            "bet_unit": 0,
+            "entry_type": None,
+            "reason": "HOLD (LOW_EDGE)",
+            "tags": tags,
+            "metrics": {
+                "rounds_total": rounds_total,
+                "pb_len": pb_len,
+                "chaos": chaos,
+                "stability": stability,
+                "beauty_score": beauty_score,
+                "pattern_score": pattern_score,
+                "pattern_symmetry": pattern_symmetry,
+                "pattern_energy": pattern_energy,
+                "picture_present": True,
+                "bigroad_structure": br_type,
+                "pattern_type": pattern_type,
+                "china_state": china_state,
+                "china_marks": china_marks,
+                "future_if_P": future_if_P,
+                "future_if_B": future_if_B,
+                "gpt_side": gpt_dec.side,
+                "gpt_confidence": gpt_dec.confidence,
+                "engine_side": engine_side,
+            },
+            "pass_reason": "HOLD_LOW_EDGE",
+        }
+
+    # ----------------------------------------------------
+    # NORMAL eligibility (기존 게이트 유지하되, UI 단순화를 위해 외부 entry_type은 None)
     # ----------------------------------------------------
     normal_structure_flags = features.get("normal_structure_flags") or {}
     normal_confirmation_flags = features.get("normal_confirmation_flags") or {}
@@ -932,109 +1051,43 @@ def recommend_bet(
     )
     tags.extend(normal_tags)
 
-    # base unit (beauty 기반)
-    if beauty_score >= 85:
-        normal_unit = 3
-    elif beauty_score >= 70:
-        normal_unit = 2
-    else:
-        normal_unit = 1
-
-    probe_unit = 1
-
-    # ----------------------------------------------------
-    # Forced PROBE after miss (PASS 고착 제거)
-    # ----------------------------------------------------
+    # 내부 상태 머신/멱등성 유지용 internal_entry_type (외부 표시와 분리)
+    internal_entry_type: str
     if flow_ctx.force_probe_next:
-        entry_type = ENTRY_PROBE
-        bet_unit = probe_unit
-        reason = "PROBE (FORCED_AFTER_MISS)"
+        internal_entry_type = ENTRY_PROBE
         tags.append("FORCE_PROBE_NEXT")
-        # 강제 PROBE는 1회 소비
         flow_ctx.force_probe_next = False
     else:
-        # 기본: allow_normal이면 NORMAL, 아니면 PROBE
-        if allow_normal:
-            entry_type = ENTRY_NORMAL
-            bet_unit = normal_unit
-            reason = "NORMAL (ALLOW_GATED)"
-        else:
-            entry_type = ENTRY_PROBE
-            bet_unit = probe_unit
-            reason = "PROBE (DEFAULT)"
+        internal_entry_type = ENTRY_NORMAL if allow_normal else ENTRY_PROBE
 
-    # ----------------------------------------------------
-    # leader_trust_state NORMAL gate
-    # - 기존 NORMAL 후보일 때만 적용 (단독 조건 금지)
-    # ----------------------------------------------------
-    if entry_type == ENTRY_NORMAL:
-        if leader_trust_state == "STRONG":
-            tags.append("LEADER_TRUST_GATE_ALLOW")
-        else:
-            entry_type = ENTRY_PROBE
-            bet_unit = probe_unit
-            reason = "PROBE (DOWNGRADE_BY_LEADER_TRUST)"
-            tags.append("LEADER_TRUST_GATE_DENY")
-            tags.append("NORMAL_TO_PROBE_BY_LEADER_TRUST")
-
-    # ----------------------------------------------------
-    # China validation: 붕괴 시 강등/판단보류 (HOLD 빈도 감소)
-    # ----------------------------------------------------
+    # China validation: 붕괴/약화 시 내부적으로는 TEST로 강등
     if china_state == "BROKEN":
-        if entry_type == ENTRY_NORMAL:
-            entry_type = ENTRY_PROBE
-            bet_unit = 1
-            reason = "PROBE (DOWNGRADE_BY_CHINA_BROKEN)"
-            tags.append("CHINA_DOWNGRADE_NORMAL_TO_PROBE")
-            # 흐름도 TEST로 되돌림(살아있지 않음)
-            flow_ctx.state = FLOW_TEST
-        else:
-            # 변경: HOLD 대신 PROBE 유지 (유닛 1 고정)
-            entry_type = ENTRY_PROBE
-            bet_unit = 1
-            reason = "PROBE (CHINA_BROKEN_KEEP)"
-            tags.append("CHINA_BROKEN_KEEP_PROBE")
-            flow_ctx.state = FLOW_TEST
-
-    elif china_state == "WEAK":
-        if entry_type == ENTRY_NORMAL:
-            entry_type = ENTRY_PROBE
-            bet_unit = 1
-            reason = "PROBE (DOWNGRADE_BY_CHINA_WEAK)"
-            tags.append("CHINA_DOWNGRADE_NORMAL_TO_PROBE")
-            flow_ctx.state = FLOW_TEST
-
-    # ----------------------------------------------------
-    # FLOW_LIFE state transition + pending set
-    # ----------------------------------------------------
-    # sanity clamp
-    if bet_unit < 0:
-        bet_unit = 0
-    if bet_unit > MAX_UNIT:
-        bet_unit = MAX_UNIT
-
-    if entry_type == ENTRY_NORMAL:
-        flow_ctx.state = FLOW_ALIVE
-        flow_ctx.last_side = side
-        flow_ctx.probe_since_last_normal = False
-    elif entry_type == ENTRY_PROBE:
         flow_ctx.state = FLOW_TEST
-        flow_ctx.last_side = side
-        flow_ctx.probe_since_last_normal = True
+        internal_entry_type = ENTRY_PROBE
+        tags.append("CHINA_BROKEN_FORCE_PROBE")
+    elif china_state == "WEAK":
+        flow_ctx.state = FLOW_TEST
+        if internal_entry_type == ENTRY_NORMAL:
+            internal_entry_type = ENTRY_PROBE
+            tags.append("CHINA_WEAK_DOWNGRADE_PROBE")
+
+    # flow state update
+    if internal_entry_type == ENTRY_NORMAL:
+        flow_ctx.state = FLOW_ALIVE
     else:
-        # should not happen; contract error
-        raise RuntimeError("invalid entry_type")
+        flow_ctx.state = FLOW_TEST
 
-    # set pending for next resolution
-    flow_ctx.pending_bet_side = side
-    flow_ctx.pending_entry_type = entry_type
+    flow_ctx.last_side = final_side
+    flow_ctx.pending_bet_side = final_side
+    flow_ctx.pending_entry_type = internal_entry_type
     flow_ctx.pending_at_pb_len = pb_len
-
     flow_ctx.last_seen_pb_len = pb_len
+    flow_ctx.probe_since_last_normal = (internal_entry_type == ENTRY_PROBE)
 
-    # ----------------------------------------------------
-    # Output
-    # ----------------------------------------------------
+    # UI 단순화를 위해 bet_unit은 1 고정, entry_type은 None 반환
+    # (UI에서 PROBE 표기/강도 표기 혼란 최소화 목적)
+    bet_unit = 1
+
     metrics: Dict[str, Any] = {
         "rounds_total": rounds_total,
         "pb_len": pb_len,
@@ -1044,12 +1097,18 @@ def recommend_bet(
         "pattern_score": pattern_score,
         "pattern_symmetry": pattern_symmetry,
         "pattern_energy": pattern_energy,
-        "picture_present": bool(picture_present),
+        "picture_present": True,
         "bigroad_structure": br_type,
         "pattern_type": pattern_type,
         "china_state": china_state,
         "china_bcnt": china_bcnt,
         "china_marks": china_marks,
+        "future_if_P": future_if_P,
+        "future_if_B": future_if_B,
+        "engine_side": engine_side,
+        "gpt_side": gpt_dec.side,
+        "gpt_confidence": gpt_dec.confidence,
+        "final_side": final_side,
         "flow_life_state": flow_ctx.state,
         "flow_life_last_side": flow_ctx.last_side,
         "flow_life_probe_hit_streak": flow_ctx.consecutive_probe_hits,
@@ -1059,19 +1118,19 @@ def recommend_bet(
         "probe_since_last_normal": bool(flow_ctx.probe_since_last_normal),
         "force_probe_next": bool(flow_ctx.force_probe_next),
         "pb_ratio": pb_ratio,
-        # line action debug
-        "line_action_dbg": line_dbg,
-        "side_before_line_action": side_before,
-        "side_after_line_action": side,
-        # leader trust
         "leader_trust_state": leader_trust_state,
+        "last5": last5,
+        "runs": runs,
+        "flow_state_for_gpt": flow_state_for_gpt,
+        "pattern_type_for_gpt": pt_for_gpt,
+        "learned_line_table_enabled": bool(ENABLE_LEARNED_LINE_TABLE),
     }
 
     return {
-        "bet_side": side,
+        "bet_side": final_side,
         "bet_unit": int(bet_unit),
-        "entry_type": entry_type,
-        "reason": reason,
+        "entry_type": None,          # ✅ UI 혼란 제거: 표시용 entry_type 제거
+        "reason": "",                # ✅ UI 혼란 제거: 설명 미표시(필요 시 서버 로그에서만 확인)
         "tags": tags,
         "metrics": metrics,
     }
