@@ -1,26 +1,24 @@
 <!DOCTYPE html>
 <!--
-변경 요약 (2025-12-31)
+변경 요약 (2026-03-14)
 ----------------------------------------------------
-1) Risk Tags 표시(표시 전용)
-   - 서버 응답 out.risk_tags(array[string])를 AI 판단 결과 영역(aiSummaryProb)에 그대로 표시
-   - 값이 없거나 빈 배열이면 Risk Tags 라인은 표시하지 않음
+1) RULE-ONLY v12.1 UI 정렬
+   - GPT / ML Reference / GPT 방향 힌트 관련 UI 제거
+   - subtitle / badge / loading 문구를 RULE-ONLY 기준으로 수정
+   - 디버그 패널 제목을 "엔진 입력 디버그"로 수정
 
-2) GPT 방향 힌트 표시(표시 전용)
-   - 서버 응답 out.gpt_direction_hint(string)를 ML Reference(mlRefBox) 바로 위에 텍스트로만 표시
-   - gpt_banker / gpt_player / gpt_neutral 만 허용, 그 외/없음이면 표시하지 않음
+2) 보드 렌더 정합성 수정
+   - drawCasinoBoards() 시작 시 Big/Bead/Eye/Small/Cock 보드를 먼저 비움
+   - RESET / UNDO / 상태 축소 시 이전 보드 잔상이 남지 않도록 수정
 
-3) 디자인 고정 준수
-   - CSS/클래스/inline style/레이아웃 변경 없음
-   - bet_side/bet_unit/entry_type/추천 로직 계산·변경 코드 미수정
+3) AI 판단 결과 카드 정합성 수정
+   - mode/GPT 설명 중심 표시 제거
+   - bet_metrics / risk_tags / bet_reason 기준으로 표시
+   - 추천 베팅 타이틀을 RULE-ONLY 엔진 기준으로 정리
 
-4) 미사용 코드/주석 제거
-   - ML Reference DOM 재배치 시도(_tryMountMlRefBelowRiskTags) 및 관련 주석 제거
-
-5) 추천 방향 표시 강화(표시 전용)
-   - 추천 베팅 영역의 betSideText에서 '추천: ' 접두사 제거
-   - PASS는 'PASS'만 표시
-   - PROBE는 방향 뒤에 '(PROBE)'만 추가하여 방향이 먼저 보이게 표시
+4) 디자인 고정 준수
+   - 전체 레이아웃/CSS 구조는 유지
+   - 표기/렌더 로직만 RULE-ONLY 백엔드 계약에 맞게 수정
 ----------------------------------------------------
 -->
 <html lang="ko">
@@ -190,42 +188,6 @@ body {
     opacity:0.9;
     margin-bottom:6px;
 }
-/* ML Reference (UI only, no decision logic) */
-.mlref-box {
-    margin-top:8px;
-    padding:10px 12px;
-    border-radius:12px;
-    background:rgba(15,23,42,0.55);
-    border:1px solid rgba(148,163,184,0.35);
-    font-size:12px;
-    line-height:1.45;
-}
-.mlref-title {
-    display:flex;
-    gap:10px;
-    align-items:baseline;
-    font-size:12px;
-    font-weight:700;
-    margin-bottom:6px;
-}
-.mlref-note {
-    font-size:11px;
-    font-weight:500;
-    opacity:0.75;
-}
-.mlref-grid {
-    display:flex;
-    flex-direction:column;
-    gap:4px;
-}
-.mlref-row {
-    display:flex;
-    justify-content:space-between;
-    gap:12px;
-}
-.mlref-k { opacity:0.75; }
-.mlref-v { font-weight:600; }
-
 .ai-summary-comment {
     font-size:14px;
     margin-bottom:8px;
@@ -401,7 +363,7 @@ body {
     justify-content:center;
     box-sizing:border-box;
     position:relative;
-    overflow:hidden; /* ✅ 셀 밖으로 마크가 이어져 보이는 현상 차단 */
+    overflow:hidden;
 }
 
 /* 칩(원) 스타일 */
@@ -547,9 +509,9 @@ body {
     <div class="app-header">
         <div>
             <div class="app-title">Baccarat Predictor PRO</div>
-            <div class="app-subtitle">룰 기반 베팅 엔진 + GPT 슈 분석 전용 (중국점 분리 렌더 / round_id 제거)</div>
+            <div class="app-subtitle">룰 기반 베팅 엔진 · RULE-ONLY v12.1 · 중국점 분리 렌더 · UNDO 지원</div>
         </div>
-        <div class="app-badge">v11.2 · china split fix · Excel 로그 · UNDO · Regime Engine</div>
+        <div class="app-badge">v12.1 · rule-only · strict · future china</div>
     </div>
 
     <div class="layout">
@@ -606,7 +568,7 @@ body {
 
             <button class="reset-btn" onclick="resetGame()">🔄 새 SHO 시작 (RESET)</button>
 
-            <div id="loadingBox" class="loading-box">🔄 GPT 분석 중입니다...</div>
+            <div id="loadingBox" class="loading-box">🔄 룰 엔진 계산 중입니다...</div>
 
             <div class="ai-rate-box" id="aiRateBox" style="display:none;">
                 <div class="ai-rate-title">AI 누적 적중률</div>
@@ -617,27 +579,13 @@ body {
             </div>
 
             <div class="card ai-summary-card" id="aiSummaryBox" style="display:none;">
-                <div class="ai-summary-header">AI 판단 결과</div>
+                <div class="ai-summary-header">엔진 판단 결과</div>
                 <div class="ai-summary-mode" id="aiSummaryMode">아직 데이터가 없습니다.</div>
                 <div class="ai-summary-prob" id="aiSummaryProb"></div>
-
-                <div class="mlref-box" id="mlRefBox" style="display:none;">
-                    <div class="mlref-title">
-                        <span>ML Reference</span>
-                        <span class="mlref-note">참고용 (엔진 판단과 무관 · 베팅 유도 없음)</span>
-                    </div>
-                    <div class="mlref-grid">
-                        <div class="mlref-row"><span class="mlref-k">side_hint</span><span class="mlref-v" id="mlRefSide">-</span></div>
-                        <div class="mlref-row"><span class="mlref-k">strength</span><span class="mlref-v" id="mlRefStrength">-</span></div>
-                        <div class="mlref-row"><span class="mlref-k">confidence</span><span class="mlref-v" id="mlRefConfidence">-</span></div>
-                        <div class="mlref-row"><span class="mlref-k">note</span><span class="mlref-v" id="mlRefNote">-</span></div>
-                    </div>
-                </div>
-
                 <div class="ai-summary-comment" id="aiSummaryComment"></div>
 
                 <div class="ai-summary-recommend">
-                    <div class="bet-box-title">🎯 Hybrid C 추천 베팅</div>
+                    <div class="bet-box-title">🎯 RULE-ONLY 추천 베팅</div>
                     <div class="bet-side" id="betSideText">-</div>
                     <div class="bet-unit" id="betUnitText"></div>
                     <div class="bet-reason" id="betReasonText"></div>
@@ -661,7 +609,7 @@ body {
 
             <div class="card feature-list" id="featureList">
                 <div class="feature-title" onclick="toggleDebugPanel()">
-                    📊 GPT 입력 디버그 (클릭해서 열기/닫기)
+                    📊 엔진 입력 디버그 (클릭해서 열기/닫기)
                 </div>
                 <div id="featureItems" style="display:none;"></div>
             </div>
@@ -687,12 +635,6 @@ const betSideText       = document.getElementById("betSideText");
 const betUnitText       = document.getElementById("betUnitText");
 const betReasonText     = document.getElementById("betReasonText");
 
-const mlRefBox        = document.getElementById("mlRefBox");
-const mlRefSide       = document.getElementById("mlRefSide");
-const mlRefStrength   = document.getElementById("mlRefStrength");
-const mlRefConfidence = document.getElementById("mlRefConfidence");
-const mlRefNote       = document.getElementById("mlRefNote");
-
 const aiInfo       = document.getElementById("aiInfo");
 
 const casinoPanel  = document.getElementById("casinoPanel");
@@ -706,30 +648,6 @@ const futureBlockP = document.getElementById("futureBlockP");
 const futureBlockB = document.getElementById("futureBlockB");
 
 let debugVisible = false;
-
-/* GPT 방향 힌트: 표시 조건(analysis / ai_ok / bet_side)과 완전히 분리.
-   - aiSummaryBox(display 제어 대상) 밖에 마운트하여 부모 display:none에 의해 같이 숨겨지는 구조를 제거 */
-let gptHintEl = document.getElementById("gptDirectionHint");
-if (!gptHintEl) {
-    gptHintEl = document.createElement("div");
-    gptHintEl.id = "gptDirectionHint";
-    gptHintEl.hidden = true;
-
-    const parent =
-        (aiSummaryBox && aiSummaryBox.parentNode) ? aiSummaryBox.parentNode :
-        (aiRateBox && aiRateBox.parentNode) ? aiRateBox.parentNode :
-        null;
-
-    if (parent) {
-        if (aiSummaryBox && aiSummaryBox.parentNode === parent) {
-            parent.insertBefore(gptHintEl, aiSummaryBox);
-        } else {
-            parent.appendChild(gptHintEl);
-        }
-    } else if (document.body) {
-        document.body.appendChild(gptHintEl);
-    }
-}
 
 function _setAiInfo(msg) {
     if (!aiInfo) return;
@@ -854,33 +772,14 @@ function toggleDebugPanel() {
     featureItems.style.display = debugVisible ? "block" : "none";
 }
 
-function updateGptDirectionHint(out) {
-    if (!gptHintEl) return;
-
-    const hint = (out && typeof out === "object") ? out.gpt_direction_hint : null;
-    if (typeof hint !== "string") {
-        gptHintEl.hidden = true;
-        gptHintEl.innerText = "";
-        return;
-    }
-
-    const norm = hint.trim();
-    let text = null;
-    if (norm === "gpt_banker") text = "GPT 방향 힌트: BANKER (참고용)";
-    else if (norm === "gpt_player") text = "GPT 방향 힌트: PLAYER (참고용)";
-    else if (norm === "gpt_neutral") text = "GPT 방향 힌트: NEUTRAL (참고용)";
-
-    if (!text) {
-        gptHintEl.hidden = true;
-        gptHintEl.innerText = "";
-        return;
-    }
-
-    gptHintEl.innerText = text;
-    gptHintEl.hidden = false;
+function resetUiBoards() {
+    document.getElementById("gridBigRoad").innerHTML = "";
+    document.getElementById("gridBead").innerHTML = "";
+    document.getElementById("gridEye").innerHTML = "";
+    document.getElementById("gridSmall").innerHTML = "";
+    document.getElementById("gridCock").innerHTML = "";
 }
 
-// RESET
 async function resetGame() {
     disableButtons();
     loadingBox.style.display = "block";
@@ -895,11 +794,7 @@ async function resetGame() {
         const out = await res.json();
         _requireExpectedRoundId(out);
 
-        document.getElementById("gridBigRoad").innerHTML = "";
-        document.getElementById("gridBead").innerHTML = "";
-        document.getElementById("gridEye").innerHTML = "";
-        document.getElementById("gridSmall").innerHTML = "";
-        document.getElementById("gridCock").innerHTML = "";
+        resetUiBoards();
 
         futureBlockP.innerHTML = "";
         futureBlockB.innerHTML = "";
@@ -910,12 +805,6 @@ async function resetGame() {
         aiRateBox.style.display     = "none";
         aiSummaryBox.style.display  = "none";
         chinaStatusText.innerHTML   = "";
-
-        if (mlRefBox) mlRefBox.style.display = "none";
-        if (gptHintEl) {
-            gptHintEl.hidden = true;
-            gptHintEl.innerText = "";
-        }
 
         loadingBox.style.display = "none";
         enableButtons();
@@ -1065,8 +954,8 @@ function drawCasinoBoardMatrix(matrix, targetId, mode, tieMatrix) {
                     if (mode === "PB") {
                         if (val === "P") node.classList.add("p");
                         else if (val === "B") node.classList.add("b");
-                        else if (val === "T") node.classList.add("t");   // ✅ 이 한 줄 추가
-                        else throw new Error(`${targetId}: 값이 P/B가 아닙니다: ${JSON.stringify(val)}`);
+                        else if (val === "T") node.classList.add("t");
+                        else throw new Error(`${targetId}: 값이 P/B/T가 아닙니다: ${JSON.stringify(val)}`);
                     }
                 }
 
@@ -1094,6 +983,8 @@ function drawCasinoBoardMatrix(matrix, targetId, mode, tieMatrix) {
 }
 
 function drawCasinoBoards(out) {
+    resetUiBoards();
+
     const bigSeq = _pickArray(out, ["big", "big_road"]);
     if (!bigSeq || bigSeq.length === 0) {
         casinoPanel.style.display = "none";
@@ -1107,16 +998,16 @@ function drawCasinoBoards(out) {
     }
     const tieMatrix = _pickArray(out, ["big_tie_matrix"]);
     drawCasinoBoardMatrix(bigMatrix, "gridBigRoad", "PB", tieMatrix);
-    
+
     const beadSeq = _pickArray(out, ["bead_seq"]);
     const beadMatrix = buildBeadMatrix(beadSeq, 6);
     drawCasinoBoardMatrix(beadMatrix, "gridBead", "PB");
 
-    const china = (out && typeof out.china === "object") ? out.china : {};
+    const china = (out && typeof out === "object") ? out.china : {};
 
-    const eyeSeq   = _pickArray(out,   ["big_eye"])      || _pickArray(china, ["big_eye"])      || [];
-    const smallSeq = _pickArray(out,   ["small_road"])   || _pickArray(china, ["small_road"])   || [];
-    const cockSeq  = _pickArray(out,   ["cockroach"])    || _pickArray(china, ["cockroach"])    || [];
+    const eyeSeq   = _pickArray(out, ["big_eye"])     || _pickArray(china, ["big_eye"])     || [];
+    const smallSeq = _pickArray(out, ["small_road"])  || _pickArray(china, ["small_road"])  || [];
+    const cockSeq  = _pickArray(out, ["cockroach"])   || _pickArray(china, ["cockroach"])   || [];
 
     const RB = new Set(["R","B"]);
 
@@ -1132,13 +1023,13 @@ function drawCasinoBoards(out) {
 function updateChinaStatus(out) {
     const china = (out && typeof out === "object") ? out.china : {};
 
-    const big   = _pickArray(out,   ["big_eye"])     || _pickArray(china, ["big_eye"])     || [];
-    const small = _pickArray(out,   ["small_road"])  || _pickArray(china, ["small_road"])  || [];
-    const cock  = _pickArray(out,   ["cockroach"])   || _pickArray(china, ["cockroach"])   || [];
+    const big   = _pickArray(out, ["big_eye"])     || _pickArray(china, ["big_eye"])     || [];
+    const small = _pickArray(out, ["small_road"])  || _pickArray(china, ["small_road"])  || [];
+    const cock  = _pickArray(out, ["cockroach"])   || _pickArray(china, ["cockroach"])   || [];
 
-    const lastB = big.length   ? big[big.length-1]   : null;
+    const lastB = big.length   ? big[big.length-1]     : null;
     const lastS = small.length ? small[small.length-1] : null;
-    const lastC = cock.length  ? cock[cock.length-1]  : null;
+    const lastC = cock.length  ? cock[cock.length-1]   : null;
 
     const meaning = (v) => {
         if (v === "R") return "적(강세)";
@@ -1155,97 +1046,45 @@ function updateChinaStatus(out) {
     chinaStatusBox.style.display = "block";
 }
 
-function updateMlReference(out) {
-    if (!mlRefBox || !mlRefSide || !mlRefStrength || !mlRefConfidence || !mlRefNote) return;
-
-    const ref = (out && typeof out === "object") ? out.ml_reference : null;
-
-    if (ref === null || ref === undefined) {
-        mlRefBox.style.display = "none";
-        mlRefSide.innerText = "-";
-        mlRefStrength.innerText = "-";
-        mlRefConfidence.innerText = "-";
-        mlRefNote.innerText = "-";
-        return;
-    }
-
-    if (typeof ref !== "object" || Array.isArray(ref)) {
-        throw new Error("ml_reference가 객체가 아닙니다. (폴백 금지)");
-    }
-
-    const side_hint  = ref.side_hint;
-    const strength   = ref.strength;
-    const confidence = ref.confidence;
-    const note       = ref.note;
-
-    const allowedSide = new Set(["PLAYER", "BANKER", "NEUTRAL"]);
-    const allowedStrength = new Set(["weak", "medium", "strong"]);
-    const allowedConfidence = new Set(["low", "medium"]);
-
-    if (typeof side_hint !== "string" || !allowedSide.has(side_hint)) {
-        throw new Error("ml_reference.side_hint 스키마 오류 (PLAYER|BANKER|NEUTRAL) (폴백 금지)");
-    }
-    if (typeof strength !== "string" || !allowedStrength.has(strength)) {
-        throw new Error("ml_reference.strength 스키마 오류 (weak|medium|strong) (폴백 금지)");
-    }
-    if (typeof confidence !== "string" || !allowedConfidence.has(confidence)) {
-        throw new Error("ml_reference.confidence 스키마 오류 (low|medium) (폴백 금지)");
-    }
-    if (typeof note !== "string" || note.trim().length === 0) {
-        throw new Error("ml_reference.note 스키마 오류 (폴백 금지)");
-    }
-
-    const joined = `${side_hint} ${strength} ${confidence} ${note}`;
-    if (joined.includes("%")) {
-        throw new Error("ml_reference에 % 표기가 포함되어 있습니다. (표시 금지 · 폴백 금지)");
-    }
-
-    mlRefSide.innerText = side_hint;
-    mlRefStrength.innerText = strength;
-    mlRefConfidence.innerText = confidence;
-    mlRefNote.innerText = note;
-
-    mlRefBox.style.display = "block";
-}
-
 function renderFeatureList(out){
     featureItems.innerHTML = "";
     const safe = (v) => (v === undefined ? null : v);
 
-    const mode = out.mode || out.enforced_mode || out.strategy_mode || null;
-    const keyFeatures = Array.isArray(out.key_features) ? out.key_features : (Array.isArray(out.ai_key_features) ? out.ai_key_features : null);
+    const betMetrics = (out && typeof out.bet_metrics === "object") ? out.bet_metrics : null;
+    const keyFeatures = Array.isArray(out.key_features) ? out.key_features : null;
 
     const items = {
-        "engine_version":     safe(out.engine_version),
-        "shoe_id":            safe(out.shoe_id),
-        "rounds_total":       safe(out.rounds_total),
+        "engine_version":         safe(out.engine_version),
+        "shoe_id":                safe(out.shoe_id),
+        "rounds_total":           safe(out.rounds_total),
 
-        "received_round_id":  safe(out.received_round_id),
-        "expected_round_id":  safe(out.expected_round_id),
+        "received_round_id":      safe(out.received_round_id),
+        "expected_round_id":      safe(out.expected_round_id),
 
-        "winner_last":        safe(out.winner),
+        "winner_last":            safe(out.winner),
 
-        "mode":               safe(mode),
+        "ai_engine":              safe(out.ai_engine),
+        "bet_side":               safe(out.bet_side),
+        "bet_unit":               safe(out.bet_unit),
+        "entry_type":             safe(out.entry_type),
+        "bet_reason":             safe(out.bet_reason),
 
-        "leader_road":        safe(out.leader_road),
-        "leader_signal":      safe(out.leader_signal),
-        "leader_confidence":  safe(out.leader_confidence),
+        "leader_trust_state":     safe(betMetrics ? betMetrics.leader_trust_state : null),
+        "signal_strength":        safe(betMetrics ? betMetrics.signal_strength : null),
+        "china_confirm_strength": safe(betMetrics ? betMetrics.china_confirm_strength : null),
 
-        "entry_type":         safe(out.entry_type),
-        "bet_side":           safe(out.bet_side),
-        "bet_unit":           safe(out.bet_unit),
-        "bet_reason":         safe(out.bet_reason),
-        "key_features":       safe(keyFeatures),
+        "key_features":           safe(keyFeatures),
+        "risk_tags":              safe(out.risk_tags),
 
-        "ai_ok":              safe(out.ai_ok),
-        "ai_total":           safe(out.ai_total),
-        "ai_correct":         safe(out.ai_correct),
-        "ai_win_rate":        safe(out.ai_win_rate),
-        "ai_win_rate_pct":    safe(out.ai_win_rate_pct),
+        "ai_ok":                  safe(out.ai_ok),
+        "ai_total":               safe(out.ai_total),
+        "ai_correct":             safe(out.ai_correct),
+        "ai_win_rate":            safe(out.ai_win_rate),
+        "ai_win_rate_pct":        safe(out.ai_win_rate_pct),
 
-        "error":              safe(out.error),
-        "detail":             safe(out.detail),
-        "note":               safe(out.note),
+        "error":                  safe(out.error),
+        "detail":                 safe(out.detail),
+        "note":                   safe(out.note),
     };
 
     for (let k in items) {
@@ -1299,23 +1138,22 @@ function updateAiSummary(out) {
     }
     aiSummaryBox.style.display = "block";
 
-    const mode = out.mode || out.enforced_mode || out.strategy_mode || "mixed";
-    let modeText = "";
-    if (mode === "pattern" || mode === "pattern-dominant") {
-        modeText = `모드: PATTERN MODE (본매 중심, 분석 ${rounds}판 기준)`;
-    } else if (mode === "flow" || mode === "flow-dominant") {
-        modeText = `모드: FLOW MODE (중국점 중심, 분석 ${rounds}판 기준)`;
-    } else if (mode === "chaos") {
-        modeText = `모드: CHAOS MODE (혼란 구간, 분석 ${rounds}판 기준)`;
-    } else {
-        modeText = `모드: MIXED MODE (혼합 판단, 분석 ${rounds}판 기준)`;
-    }
-    aiSummaryMode.innerText = modeText;
+    const betMetrics = (out && typeof out.bet_metrics === "object") ? out.bet_metrics : {};
+    const lines = [];
 
-    const parts = [];
-    const kf = Array.isArray(out.key_features) ? out.key_features : (Array.isArray(out.ai_key_features) ? out.ai_key_features : []);
-    if (kf.length > 0) {
-        parts.push("핵심 특징: " + kf.slice(0, 3).join(" · "));
+    aiSummaryMode.innerText = "모드: RULE-ONLY ENGINE";
+
+    if (typeof betMetrics.signal_strength === "number") {
+        lines.push(`signal_strength: ${betMetrics.signal_strength.toFixed(4)}`);
+    }
+    if (typeof betMetrics.leader_trust_state === "string" && betMetrics.leader_trust_state) {
+        lines.push(`leader_trust: ${betMetrics.leader_trust_state}`);
+    }
+    if (typeof betMetrics.china_confirm_strength === "string" && betMetrics.china_confirm_strength) {
+        lines.push(`china_confirm: ${betMetrics.china_confirm_strength}`);
+    }
+    if (typeof betMetrics.china_state === "string" && betMetrics.china_state) {
+        lines.push(`china_state: ${betMetrics.china_state}`);
     }
 
     const tags = (out && typeof out === "object") ? out.risk_tags : null;
@@ -1328,28 +1166,26 @@ function updateAiSummary(out) {
             }
         }
         if (cleaned.length > 0) {
-            parts.push("[Risk Tags] " + cleaned.join(", ") + " (참고용)");
+            lines.push("[Tags] " + cleaned.join(", "));
         }
     }
 
-    aiSummaryProb.innerText = parts.join(" / ");
-
-    const analysis = (typeof out.analysis === "string") ? out.analysis : "";
-    aiSummaryComment.innerText = analysis || "";
+    aiSummaryProb.innerText = lines.join(" / ");
+    aiSummaryComment.innerText = "";
 
     const bet = _requireBetSchema(out);
 
     if (bet.ai_ok === false) {
         betSideText.innerText = "PASS";
         betUnitText.innerText = "베팅 없음 (AI 불가/중단)";
-        betReasonText.innerText = bet.reason ? (`사유: ${bet.reason}`) : "AI가 비활성/중단 상태입니다.";
+        betReasonText.innerText = bet.reason ? (`사유: ${bet.reason}`) : "엔진이 비활성/중단 상태입니다.";
         return;
     }
 
     if (bet.unit <= 0) {
         betSideText.innerText = "PASS";
         betUnitText.innerText = "베팅 없음 (쉬는 구간)";
-        betReasonText.innerText = bet.reason || "Hybrid C 규칙에 의해 베팅을 쉬는 구간입니다.";
+        betReasonText.innerText = bet.reason || "룰 엔진 기준으로 쉬는 구간입니다.";
         return;
     }
 
@@ -1363,9 +1199,8 @@ function updateAiSummary(out) {
         bet.reason ||
         (bet.entry_type === "PROBE"
             ? "탐색 진입 구간입니다."
-            : "AI 추천 사유 없음");
-}        
-
+            : "엔진 사유 없음");
+}
 
 function renderFutureDot(type, color) {
     if (!color) return `<div class="chip-small"></div>`;
@@ -1385,16 +1220,16 @@ function inferFutureColors(fScenario) {
     if (!fScenario) {
         return { bigEye: null, small: null, cock: null };
     }
-    const bigEye = fScenario.big_eye || fScenario.bigEye || null;
-    const small  = fScenario.small_road || fScenario.smallRoad || null;
-    const cock   = fScenario.cockroach || fScenario.cock || null;
+    const bigEye = fScenario.big_eye || null;
+    const small  = fScenario.small_road || null;
+    const cock   = fScenario.cockroach || null;
     return { bigEye, small, cock };
 }
 
 function drawFuturePanel(out) {
     const future = out.future_scenarios || {};
-    const fP = future.P || future.player || null;
-    const fB = future.B || future.banker || null;
+    const fP = future.P || null;
+    const fB = future.B || null;
 
     if (!fP && !fB) {
         futurePanel.style.display = "none";
@@ -1465,13 +1300,6 @@ async function sendResult(winner) {
         const raw = await res.text();
         const out = _parseJsonStrict(raw, res.status);
 
-        try {
-            updateGptDirectionHint(out);
-        } catch (e) {
-            _setAiInfo(e.message);
-            console.error(e);
-        }
-
         if (!res.ok) {
             throw new Error(_formatServerError(res.status, out));
         }
@@ -1487,20 +1315,7 @@ async function sendResult(winner) {
 
         renderFeatureList(out);
         updateAiStatsBox(out);
-
-        try {
-            updateMlReference(out);
-        } catch (e) {
-            _setAiInfo(e.message);
-            console.error(e);
-        }
-
-        try {
-            updateAiSummary(out);
-        } catch (e) {
-            _setAiInfo(e.message);
-            console.error(e);
-        }
+        updateAiSummary(out);
 
     } catch (e) {
         loadingBox.style.display = "none";
@@ -1521,13 +1336,6 @@ async function undoLast() {
         const raw = await res.text();
         const out = _parseJsonStrict(raw, res.status);
 
-        try {
-            updateGptDirectionHint(out);
-        } catch (e) {
-            _setAiInfo(e.message);
-            console.error(e);
-        }
-
         if (!res.ok) {
             throw new Error(_formatServerError(res.status, out));
         }
@@ -1543,20 +1351,7 @@ async function undoLast() {
 
         renderFeatureList(out);
         updateAiStatsBox(out);
-
-        try {
-            updateMlReference(out);
-        } catch (e) {
-            _setAiInfo(e.message);
-            console.error(e);
-        }
-
-        try {
-            updateAiSummary(out);
-        } catch (e) {
-            _setAiInfo(e.message);
-            console.error(e);
-        }
+        updateAiSummary(out);
 
     } catch (e) {
         loadingBox.style.display = "none";

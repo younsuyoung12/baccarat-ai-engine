@@ -2,42 +2,47 @@
 """
 predictor_adapter.py
 ====================================================
-Baccarat Predictor AI Engine v11.x (STRICT Hybrid: Rule Engine + GPT Pattern Interpreter)
+Baccarat Predictor AI Engine v12.1
+STRICT Rule Adapter (Deterministic · No GPT)
 
-역할
-------
-- features.build_feature_payload_v3() 로 Feature JSON 생성
-- future_simulator 를 이용해 FUTURE CHINA ROADS(매우 중요) 정보를 STRICT로 생성/검증
-- recommend.recommend_bet() 으로 최종 bet_side(P/B) 결정 (recommend 내부에서 엔진 판단 + GPT 판단 결합)
-- engine_state.save_engine_state() 로 매 라운드 상태 영구 저장
+변경 요약 (2026-03-14)
+----------------------------------------------------
+1) recommend.py 시그니처 정합성 수정
+   - recommend.recommend_bet(...) 호출에서
+     gpt_analysis / mode / alerts 인자 제거
+   - 새 시그니처:
+     recommend_bet(pb_seq, features, leader_state, meta)
+2) Source of truth 정리
+   - leader_state는 features_dict["leader_state"]를 그대로 사용
+   - app.py / recommend.py / features.py 계약 정합성 유지
+3) GPT 잔재 제거
+   - 실제 GPT 호출/추론/설명 생성 없음
+   - app.py 호환용 필드도 제거하고 최소 응답만 반환
+4) STRICT 유지
+   - 누락/타입 위반/셀 값 위반 시 즉시 예외
+   - 조용한 continue/pass/fallback 금지
+----------------------------------------------------
 
 정책
 ------
 STRICT · NO-FALLBACK · FAIL-FAST
-- 누락/불일치/스키마 위반 → 즉시 예외(RuntimeError)
+- 누락/불일치/스키마 위반 → 즉시 예외(RuntimeError/TypeError/ValueError)
 - 조용한 continue/pass 금지
 - 임의 기본값 생성 금지
 
 중요
 ------
-- 이 모듈은 "GPT 분석/해설"을 만들지 않는다.
-- UI에는 P/B만 필요하므로, 분석(comment) 생성은 하지 않는다.
-- /predict에서 TIE(T)는 app.py에서 선차단되어야 하며, 이 함수로 들어오면 계약 위반으로 예외 처리한다.
+- /predict에서 TIE(T)는 app.py에서 선차단되어야 하며,
+  이 함수로 들어오면 계약 위반으로 예외 처리한다.
+- 이 모듈은 설명 생성기가 아니다.
+- rule engine이 최종 bet_side / bet_unit / entry_type을 결정한다.
 
 반환
 ------
 {
   "ai_ok": bool,
   "features": dict,
-  "gpt_raw": dict|None,          # 사용 안 함(호환용)
-  "ml_raw": None,                # 사용 안 함(호환용)
-  "ml_reference": None,          # 사용 안 함(호환용)
-  "ai_decision": dict,           # 최소 스키마(호환용)
-  "alert_message": None,
-  "enforced_mode": None,
-  "bet": dict,                   # recommend.py 출력
-  "strategy_mode": None,
-  "strategy_note": str,
+  "bet": dict,
   "rl_reward": None
 }
 """
@@ -50,7 +55,7 @@ import road
 import features
 import future_simulator
 import recommend
-from engine_state import save_engine_state  # 매 라운드 상태 영구 저장용
+from engine_state import save_engine_state
 
 IS_RESETTING = False
 
@@ -70,12 +75,6 @@ def _require_list(v: Any, name: str) -> List[Any]:
     return v
 
 
-def _require_nonempty_str(v: Any, name: str) -> str:
-    if not isinstance(v, str) or not v.strip():
-        raise ValueError(f"{name} must be non-empty string")
-    return v.strip()
-
-
 def _normalize_winner(prev_round_winner: Optional[str]) -> str:
     if prev_round_winner is None:
         raise ValueError("prev_round_winner is required (P/B)")
@@ -88,18 +87,10 @@ def _normalize_winner(prev_round_winner: Optional[str]) -> str:
 
 
 def _safe_save_state() -> None:
-    # STRICT: 실패는 로깅/관측이 필요하나, 이 함수 자체는 예외를 삼키지 않는다.
-    # save_engine_state 자체가 실패하면 호출부에서 예외로 처리한다.
     save_engine_state()
 
 
 def _assert_future_scenarios_strict(features_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    STRICT:
-    - features.future_scenarios는 반드시 dict여야 한다.
-    - keys: "P", "B" 반드시 존재
-    - 각 값은 dict
-    """
     fs = features_dict.get("future_scenarios")
     if fs is None:
         raise RuntimeError("features.future_scenarios missing (required)")
@@ -114,10 +105,6 @@ def _assert_future_scenarios_strict(features_dict: Dict[str, Any]) -> Dict[str, 
 
 
 def _assert_bet_contract_strict(bet: Dict[str, Any]) -> None:
-    """
-    recommend.recommend_bet() 결과 스키마 강제.
-    보정/폴백 금지.
-    """
     bet = _require_dict(bet, "bet")
 
     required_keys = {"bet_side", "bet_unit", "entry_type", "reason", "tags", "metrics"}
@@ -151,66 +138,63 @@ def _assert_bet_contract_strict(bet: Dict[str, Any]) -> None:
         raise RuntimeError("bet.metrics must be dict")
 
 
-def _normalize_bet_aliases_strict(bet: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    호환을 위해 side/unit 별칭을 추가(동등 값 복제).
-    보정/변형 아님.
-    """
-    bet = _require_dict(bet, "bet")
-    if "bet_side" in bet and "side" not in bet:
-        bet["side"] = bet["bet_side"]
-    if "bet_unit" in bet and "unit" not in bet:
-        bet["unit"] = bet["bet_unit"]
-    if "chaos_limit" not in bet:
-        bet["chaos_limit"] = None
-    return bet
+def _normalize_china_matrix_strict(matrix: Any, name: str) -> List[List[str]]:
+    if matrix is None:
+        raise RuntimeError(f"{name} missing (required)")
+
+    if not isinstance(matrix, list):
+        raise TypeError(f"{name} must be list, got {type(matrix).__name__}")
+
+    out: List[List[str]] = []
+    for ci, col in enumerate(matrix):
+        if not isinstance(col, list):
+            raise TypeError(f"{name}[{ci}] must be list, got {type(col).__name__}")
+        new_col: List[str] = []
+        for ri, cell in enumerate(col):
+            if cell is None:
+                new_col.append("")
+                continue
+            if not isinstance(cell, str):
+                raise TypeError(f"{name}[{ci}][{ri}] must be str or None, got {type(cell).__name__}")
+            s = cell.strip().upper()
+            if s not in ("", "R", "B"):
+                raise RuntimeError(f"{name}[{ci}][{ri}] invalid cell: {cell!r} (allowed: '', 'R', 'B', None)")
+            new_col.append(s)
+        out.append(new_col)
+    return out
+
+
+def _inject_china_matrices_strict(features_dict: Dict[str, Any]) -> None:
+    if not isinstance(features_dict, dict):
+        raise TypeError("features_dict must be dict")
+
+    be = getattr(road, "big_eye_matrix", None)
+    sm = getattr(road, "small_road_matrix", None)
+    ck = getattr(road, "cockroach_matrix", None)
+
+    features_dict["big_eye_matrix"] = _normalize_china_matrix_strict(be, "road.big_eye_matrix")
+    features_dict["small_road_matrix"] = _normalize_china_matrix_strict(sm, "road.small_road_matrix")
+    features_dict["cockroach_matrix"] = _normalize_china_matrix_strict(ck, "road.cockroach_matrix")
 
 
 def _build_leader_state_strict(features_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
-    STRICT:
-    - leader_state는 dict여야 한다.
-    - 계산/추론 없이, features에 이미 존재하는 leader 키만 전달.
+    Source of truth:
+    - features_dict["leader_state"] 가 반드시 있어야 한다.
+    - recommend.py는 이 값을 직접 사용한다.
     """
-    leader_state: Dict[str, Any] = {}
     if not isinstance(features_dict, dict):
         raise TypeError("features_dict must be dict")
 
-    for k in ("leader_trust_state", "leader_ready", "leader_confidence", "leader_source", "leader_signal"):
-        if k in features_dict:
-            leader_state[k] = features_dict[k]
+    leader_state = features_dict.get("leader_state")
+    leader_state = _require_dict(leader_state, "features_dict.leader_state")
 
-    # 호환: leader_signal(P/B)이 있으면 leader_side로 복제(추정 아님)
-    ls = features_dict.get("leader_signal")
-    if ls in ("P", "B") and "leader_side" not in leader_state:
-        leader_state["leader_side"] = ls
+    required = {"leader_confidence", "leader_trust_state", "leader_signal"}
+    missing = required - set(leader_state.keys())
+    if missing:
+        raise RuntimeError(f"leader_state missing required keys: {sorted(missing)}")
 
     return leader_state
-
-
-def _empty_ai_decision_ok_strict(features_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    app.py(READY)에서 comment를 요구할 수 있어 최소/결정론적 comment 제공.
-    - 절대 예측/확률/퍼센트 금지
-    """
-    # STRICT: pattern_type이 없으면 예외 (features 계약 위반)
-    pt = features_dict.get("pattern_type")
-    if not isinstance(pt, str) or not pt.strip():
-        raise RuntimeError("features.pattern_type missing/invalid (required for ai_decision.comment)")
-    comment = f"PATTERN:{pt.strip().lower()}"  # 결정론적/파생 문자열
-
-    return {
-        "ai_ok": True,
-        "comment": comment,
-        "error": "",
-        "risk_tags": [],
-        "key_features": [],
-        # 호환 키들
-        "mode_raw": None,
-        "meta_info": None,
-        "snapshot": None,
-        "engine": "hybrid_rule+gpt",
-    }
 
 
 # -----------------------------
@@ -224,29 +208,36 @@ def run_ai_pipeline(
     """
     STRICT pipeline:
     - winner는 반드시 P/B 이어야 한다(T는 app.py에서 선차단)
-    - future_scenarios는 반드시 존재해야 한다(중요 기능)
-    - recommend 내부에서 GPT 호출/결합 수행
+    - future_scenarios는 반드시 존재해야 한다
+    - recommend.py는 deterministic rule engine이라고 가정한다.
     """
     if IS_RESETTING:
         raise RuntimeError("RESETTING: run_ai_pipeline called during reset")
+
+    if ai_recent_results is not None:
+        _require_list(ai_recent_results, "ai_recent_results")
+        if any(not isinstance(x, int) for x in ai_recent_results):
+            raise TypeError("ai_recent_results must be list[int]")
 
     if not isinstance(ai_streak_lose, int):
         raise TypeError(f"ai_streak_lose must be int, got {type(ai_streak_lose).__name__}")
 
     winner = _normalize_winner(prev_round_winner)
     if winner == "T":
-        # STRICT: app.py에서 선차단이 계약
         raise RuntimeError("CONTRACT_VIOLATION: run_ai_pipeline must not be called with winner='T'")
 
-    # 1) Feature 생성 (STRICT)
+    # 1) Feature 생성
     features_dict = _require_dict(features.build_feature_payload_v3(winner), "features.build_feature_payload_v3()")
 
-    # 2) PB 시퀀스 주입 (STRICT)
+    # 2) PB sequence 주입
     pb_seq = road.get_pb_sequence()
     pb_seq = _require_list(pb_seq, "road.get_pb_sequence()")
     features_dict["pb_seq"] = pb_seq
 
-    # 3) chaos/stability alias 매핑 (STRICT: 동등 값 복제)
+    # 3) China matrices 주입
+    _inject_china_matrices_strict(features_dict)
+
+    # 4) chaos/stability alias 매핑 (동등 값 복제)
     if "flow_chaos_risk" not in features_dict:
         raise KeyError("required key missing: flow_chaos_risk")
     if "flow_stability" not in features_dict:
@@ -255,10 +246,9 @@ def run_ai_pipeline(
     features_dict["chaos"] = float(features_dict["flow_chaos_risk"])
     features_dict["stability"] = float(features_dict["flow_stability"])
 
-    # 4) FUTURE CHINA ROADS (필수)
+    # 5) FUTURE CHINA ROADS 검증 + merge
     fs = _assert_future_scenarios_strict(features_dict)
 
-    # 4-1) future_simulator merge는 "중요 기능"이므로 실패 시 예외
     merged = future_simulator.merge_future_china_roads(
         fs,
         include_two_step=True,
@@ -266,52 +256,36 @@ def run_ai_pipeline(
     )
     merged = _require_dict(merged, "future_simulator.merge_future_china_roads()")
     features_dict["future_scenarios"] = merged
-    _assert_future_scenarios_strict(features_dict)  # 재검증
+    _assert_future_scenarios_strict(features_dict)
 
-    # 5) recommend 호출 (recommend 내부에서 GPT 하이브리드 수행)
+    # 6) leader_state 구성
     leader_state = _build_leader_state_strict(features_dict)
 
-    # recommend.py는 gpt_analysis를 STRICT로 사용하지 않도록 설계(빈 dict 전달)
-    gpt_analysis: Dict[str, Any] = {}
-    mode = ""  # 표시/로깅용. 결정 로직 관여 금지.
-    alerts: Dict[str, Any] = {}
+    # 7) meta
     meta: Dict[str, Any] = {}
+    if "meta" in features_dict:
+        meta_obj = features_dict["meta"]
+        meta = _require_dict(meta_obj, "features_dict.meta")
 
-    if isinstance(features_dict.get("meta"), dict):
-        meta = features_dict["meta"]
-
+    # 8) recommend 호출 (v12.1 시그니처)
     bet = recommend.recommend_bet(
-        pb_seq,
-        features_dict,
-        leader_state,
-        gpt_analysis,
-        mode,
-        alerts,
-        meta,
+        pb_seq=pb_seq,
+        features=features_dict,
+        leader_state=leader_state,
+        meta=meta,
     )
     bet = _require_dict(bet, "recommend.recommend_bet()")
     _assert_bet_contract_strict(bet)
-    bet = _normalize_bet_aliases_strict(bet)
 
-    # 6) ai_decision (호환용, 예측/확률/방향 없음)
-    ai_decision = _empty_ai_decision_ok_strict(features_dict)
-
+    # 9) 최소 응답 구성
     resp: Dict[str, Any] = {
         "ai_ok": True,
         "features": features_dict,
-        "gpt_raw": {},          # 사용 안함(호환)
-        "ml_raw": None,
-        "ml_reference": None,
-        "ai_decision": ai_decision,
-        "alert_message": None,
-        "enforced_mode": None,
         "bet": bet,
-        "strategy_mode": None,
-        "strategy_note": "",
         "rl_reward": None,
     }
 
-    # 7) 상태 저장 (STRICT: 실패하면 예외)
+    # 10) 상태 저장
     _safe_save_state()
 
     return resp

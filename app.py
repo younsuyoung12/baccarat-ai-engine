@@ -22,6 +22,23 @@ Baccarat Predictor AI Engine (Flask API)
   - request_id가 없더라도, 매우 짧은 시간 내 동일 winner 연속 요청은 더블클릭으로 간주하고 직전 응답 반환(200)
   - 서버는 라운드 카운터의 단일 진실: len(big_road) 기반 expected_round_id
 
+변경 요약 (2026-03-14, RULE-ONLY)
+----------------------------------------------------
+1) RULE-ONLY 계약 반영
+   - predictor_adapter는 최소 응답(features / bet / rl_reward)만 반환한다.
+   - bet.reason 을 최종 bet_reason으로 사용한다.
+   - analysis 는 자연어 설명이 아니라 rule code 문자열만 사용한다.
+   - bet.tags / bet.metrics 를 로그/응답에 반영한다.
+2) reset 동기화 근본 수정
+   - predictor_adapter.IS_RESETTING 을 모듈 원본에 직접 반영한다.
+   - 잘못된 from-import 값 복사 사용 제거.
+3) leader_state 정합성 수정
+   - features["leader_state"] 를 source of truth 로 사용한다.
+   - leader_road / leader_signal / leader_confidence / road_hit_rates 추출을 nested 구조 기준으로 수정한다.
+4) 운영 안전성
+   - __main__ 실행 시 debug=False
+----------------------------------------------------
+
 변경 요약 (2026-03-04, STRICT / NO-LEARNING)
 ----------------------------------------------------
 1) meta_learning 의존 제거(학습 사용 안함 정책)
@@ -68,17 +85,16 @@ from typing import Any, Dict, List, Optional
 
 from flask import Flask, jsonify, render_template, request
 
+import engine_state
 import features
 import pattern
+import predictor_adapter
 import road
 import road_leader
-import engine_state
+from excel_logger import append_round_log_to_excel, new_shoe_id, remove_last_round_log_for_shoe
 
 load_engine_state = engine_state.load_engine_state
 save_engine_state = engine_state.save_engine_state
-
-from excel_logger import append_round_log_to_excel, new_shoe_id, remove_last_round_log_for_shoe
-from predictor_adapter import run_ai_pipeline, IS_RESETTING
 
 # ------------------------------------------------------------
 # 파일 경로(단일 프로세스 기준)
@@ -169,6 +185,8 @@ def _require_nonempty_str(v: Any, name: str) -> str:
     if not isinstance(v, str) or not v.strip():
         raise ValueError(f"{name} must be non-empty string")
     return v.strip()
+
+
 def _require(d: Dict[str, Any], key: str) -> Any:
     """
     STRICT:
@@ -180,6 +198,7 @@ def _require(d: Dict[str, Any], key: str) -> Any:
     if key not in d:
         raise KeyError(f"missing required field: {key}")
     return d[key]
+
 
 def _pb_seq_no_ties(big_road: List[str]) -> List[str]:
     return [x for x in big_road if x in ("P", "B")]
@@ -304,6 +323,26 @@ def _is_request_id_processed(req_id: str) -> bool:
     return req_id in _recent_request_id_set
 
 
+def _extract_leader_view(feat: Dict[str, Any]) -> Dict[str, Any]:
+    leader_state = feat.get("leader_state")
+    if not isinstance(leader_state, dict):
+        return {
+            "leader_road": None,
+            "leader_signal": None,
+            "leader_confidence": None,
+            "leader_trust_state": None,
+            "road_hit_rates": feat.get("road_hit_rates"),
+        }
+
+    return {
+        "leader_road": leader_state.get("leader_road"),
+        "leader_signal": leader_state.get("leader_signal"),
+        "leader_confidence": leader_state.get("leader_confidence"),
+        "leader_trust_state": leader_state.get("leader_trust_state"),
+        "road_hit_rates": leader_state.get("road_hit_rates", feat.get("road_hit_rates")),
+    }
+
+
 def _build_not_ready_payload(reason: str, winner_raw: str) -> Dict[str, Any]:
     pb_stats = _compute_pb_stats(road.big_road)
     streak = _compute_streak_info(road.big_road)
@@ -311,10 +350,10 @@ def _build_not_ready_payload(reason: str, winner_raw: str) -> Dict[str, Any]:
     big_pb = _pb_seq_no_ties(road.big_road)
 
     if winner_raw == "T":
-        warmup_analysis = f"TIE: {reason}"
+        warmup_analysis = ""
         bet_reason = "TIE"
     else:
-        warmup_analysis = f"WARMUP: {reason}"
+        warmup_analysis = ""
         bet_reason = "WARMUP"
 
     ai_total = int(ai_stats.get("total") or 0)
@@ -330,7 +369,7 @@ def _build_not_ready_payload(reason: str, winner_raw: str) -> Dict[str, Any]:
         "analysis": warmup_analysis,
         "ai_ok": False,
         "ai_error": reason,
-        "ai_engine": "warmup",
+        "ai_engine": "rule_only_v12.1",
         "enforced_mode": None,
         "strategy_mode": None,
         "strategy_comment": None,
@@ -472,7 +511,7 @@ def reset_engine_state() -> None:
     last_response_payload = None
 
     last_processed_round_id = 0
-    rl_learning_enabled = False  # ✅ 학습 비활성 고정
+    rl_learning_enabled = False
 
     _recent_request_ids = deque(maxlen=200)
     _recent_request_id_set = set()
@@ -504,79 +543,12 @@ def _bootstrap_on_startup() -> None:
 
 
 # ------------------------------------------------------------
-# 모드 디버깅용 유틸 (STRICT)
-# ------------------------------------------------------------
-def build_mode_debug_reason(
-    prev_mode: Optional[str],
-    next_mode: Optional[str],
-    feat: Dict[str, Any],
-    future: Dict[str, Any],
-) -> Optional[str]:
-    if not next_mode:
-        return None
-
-    feat = _require_dict(feat, "feat")
-    future = _require_dict(future, "future_scenarios")
-
-    # STRICT: 필수 키는 반드시 존재해야 한다(누락 시 예외)
-    pattern_score = float(_require(feat, "pattern_score"))
-    flow_strength = float(_require(feat, "flow_strength"))
-    chaos_risk = float(_require(feat, "flow_chaos_risk"))
-    reversal_signal = float(_require(feat, "pattern_reversal_signal"))
-
-    fut_p = _require_dict(_require(future, "P"), "future_scenarios.P")
-    fut_b = _require_dict(_require(future, "B"), "future_scenarios.B")
-
-    fp_ps = float(_require(fut_p, "pattern_score"))
-    fp_fs = float(_require(fut_p, "flow_strength"))
-    fb_ps = float(_require(fut_b, "pattern_score"))
-    fb_fs = float(_require(fut_b, "flow_strength"))
-
-    parts: List[str] = []
-
-    if prev_mode is None:
-        parts.append(f"초기 모드={next_mode}")
-    else:
-        parts.append(f"{prev_mode} → {next_mode}")
-
-    if pattern_score >= 70:
-        parts.append(f"pattern_score 높음({pattern_score:.1f})")
-    elif pattern_score <= 40:
-        parts.append(f"pattern_score 낮음({pattern_score:.1f})")
-    else:
-        parts.append(f"pattern_score 중간({pattern_score:.1f})")
-
-    if flow_strength >= 0.6:
-        parts.append(f"flow_strength 강함({flow_strength:.2f})")
-    elif flow_strength <= 0.3:
-        parts.append(f"flow_strength 약함({flow_strength:.2f})")
-    else:
-        parts.append(f"flow_strength 보통({flow_strength:.2f})")
-
-    if chaos_risk >= 0.6:
-        parts.append(f"chaos_risk 높음({chaos_risk:.2f})")
-    elif chaos_risk <= 0.2:
-        parts.append(f"chaos_risk 낮음({chaos_risk:.2f})")
-    else:
-        parts.append(f"chaos_risk 보통({chaos_risk:.2f})")
-
-    if reversal_signal >= 0.7:
-        parts.append(f"reversal_signal 강함({reversal_signal:.2f})")
-
-    parts.append(f"future(P) ps={fp_ps:.1f}, fs={fp_fs:.2f}")
-    parts.append(f"future(B) ps={fb_ps:.1f}, fs={fb_fs:.2f}")
-
-    return " | ".join(parts)
-
-
-# ------------------------------------------------------------
 # API
 # ------------------------------------------------------------
 @app.route("/reset", methods=["POST"])
 def reset_route():
-    global IS_RESETTING
     try:
-        IS_RESETTING = True
+        predictor_adapter.IS_RESETTING = True
         reset_engine_state()
         _sync_round_id_from_big_road()
 
@@ -588,7 +560,7 @@ def reset_route():
         }
         return jsonify(payload)
     finally:
-        IS_RESETTING = False
+        predictor_adapter.IS_RESETTING = False
 
 
 @app.route("/predict", methods=["POST"])
@@ -600,7 +572,7 @@ def predict_route():
 
     _ensure_shoe_id_loaded()
 
-    if IS_RESETTING:
+    if predictor_adapter.IS_RESETTING:
         return _json_error(409, "RESETTING", "engine is resetting now")
 
     data = request.get_json(silent=True)
@@ -723,7 +695,7 @@ def predict_route():
 
         try:
             pipe = _require_dict(
-                run_ai_pipeline(
+                predictor_adapter.run_ai_pipeline(
                     prev_round_winner=winner_raw,
                     ai_recent_results=ai_recent_results,
                     ai_streak_lose=ai_streak_lose,
@@ -746,62 +718,55 @@ def predict_route():
 
             return jsonify(payload), 200
 
-        feat = _require_dict(pipe.get("features"), "pipe.features")
-        bet = _require_dict(pipe.get("bet"), "pipe.bet")
-        ai_dec = _require_dict(pipe.get("ai_decision"), "pipe.ai_decision")
+        feat = _require_dict(_require(pipe, "features"), "pipe.features")
+        bet = _require_dict(_require(pipe, "bet"), "pipe.bet")
 
-        ai_ok = bool(ai_dec.get("ai_ok"))
-        ai_error = ai_dec.get("error")
-
+        ai_ok = bool(pipe.get("ai_ok"))
         if not ai_ok:
-            raise RuntimeError(f"AI_ANALYSIS_FAILED: {ai_error}")
+            raise RuntimeError("AI_PIPELINE_FAILED: ai_ok is False")
 
-        comment = _require_nonempty_str(ai_dec.get("comment"), "ai_decision.comment")
+        bet_reason = _require_nonempty_str(_require(bet, "reason"), "bet.reason")
 
-        future = _require_dict(_require(feat, "future_scenarios"), "features.future_scenarios")
-        _require_dict(_require(future, "P"), "features.future_scenarios.P")
-        _require_dict(_require(future, "B"), "features.future_scenarios.B")
-
-        bet_side = str(bet.get("bet_side") or "PASS").upper()
-        bet_unit = int(bet.get("bet_unit") or 0)
-        bet_reason = str(bet.get("bet_reason") or "")
+        raw_bet_side = bet.get("bet_side")
+        if raw_bet_side is None:
+            bet_side = "PASS"
+        else:
+            bet_side = str(raw_bet_side).upper()
 
         if bet_side not in ("P", "B", "PASS"):
-            raise ValueError(f"BET_CONTRACT_VIOLATION: bet_side={bet_side}")
+            raise ValueError(f"BET_CONTRACT_VIOLATION: bet_side={bet_side!r}")
+
+        bet_unit = int(_require(bet, "bet_unit"))
+        if bet_unit < 0:
+            raise RuntimeError(f"BET_CONTRACT_VIOLATION: bet_unit={bet_unit}")
+
+        entry_type = bet.get("entry_type")
+        if entry_type is not None and entry_type not in ("PROBE", "NORMAL"):
+            raise RuntimeError(f"BET_CONTRACT_VIOLATION: entry_type={entry_type!r}")
+
+        tags = bet.get("tags")
+        if not isinstance(tags, list) or any(not isinstance(x, str) for x in tags):
+            raise RuntimeError("BET_CONTRACT_VIOLATION: bet.tags must be list[str]")
+
+        bet_metrics = _require_dict(_require(bet, "metrics"), "bet.metrics")
+        leader_view = _extract_leader_view(feat)
 
         bet_side_display = {"P": "PLAYER", "B": "BANKER", "PASS": "PASS"}[bet_side]
 
-        gpt_raw = pipe.get("gpt_raw") or {}
-        if gpt_raw is not None and not isinstance(gpt_raw, dict):
-            raise TypeError("pipe.gpt_raw must be dict")
+        # RULE-ONLY 정책: 자연어 해설 금지 → rule code만 사용
+        analysis = bet_reason
 
-        risk_tags: List[str] = []
+        # UI/로그 호환: risk_tags에는 rule tags 사용
+        risk_tags: List[str] = [x.strip() for x in tags if isinstance(x, str) and x.strip()]
+
+        # UI/로그 호환: key_features는 결정론적 핵심 지표 몇 개만 사용
         key_features: List[str] = []
-
-        if isinstance(gpt_raw, dict):
-            rt = gpt_raw.get("risk_tags")
-            kf = gpt_raw.get("key_features")
-
-            if rt is not None:
-                if not isinstance(rt, list) or not all(isinstance(x, str) for x in rt):
-                    raise TypeError("gpt_raw.risk_tags must be list[str]")
-                risk_tags = [x.strip() for x in rt if isinstance(x, str) and x.strip()]
-
-            if kf is not None:
-                if not isinstance(kf, list) or not all(isinstance(x, str) for x in kf):
-                    raise TypeError("gpt_raw.key_features must be list[str]")
-                key_features = [x.strip() for x in kf if isinstance(x, str) and x.strip()]
-
-        analysis = comment
-        if risk_tags:
-            analysis += "\n\n[Risk Tags]\n" + "\n".join(f"- {t}" for t in risk_tags)
-
-        prev_mode = (last_response_payload or {}).get("enforced_mode") if isinstance(last_response_payload, dict) else None
-        next_mode = feat.get("enforced_mode")
-        mode_changed = bool(prev_mode != next_mode) if next_mode else False
-        mode_change_reason = None
-        if mode_changed:
-            mode_change_reason = build_mode_debug_reason(prev_mode, next_mode, feat, future)
+        if "signal_strength" in bet_metrics:
+            key_features.append(f"SIGNAL_STRENGTH={float(bet_metrics['signal_strength']):.4f}")
+        if "leader_trust_state" in bet_metrics:
+            key_features.append(f"LEADER_TRUST={str(bet_metrics['leader_trust_state'])}")
+        if "china_confirm_strength" in bet_metrics:
+            key_features.append(f"CHINA_CONFIRM={str(bet_metrics['china_confirm_strength'])}")
 
         rounds_total = int(_require(feat, "rounds_total"))
         pb_stats = _compute_pb_stats(road.big_road)
@@ -819,7 +784,7 @@ def predict_route():
             "bet_unit": bet_unit,
             "bet_reason": bet_reason,
             "analysis": analysis,
-            "enforced_mode": next_mode,
+            "entry_type": entry_type,
         }
 
         row = {
@@ -832,11 +797,11 @@ def predict_route():
             "bet_reason": bet_reason,
             "analysis": analysis,
             "ai_ok": ai_ok,
-            "ai_error": ai_error,
-            "ai_engine": "rule+gpt_analysis",
-            "enforced_mode": next_mode,
-            "strategy_mode": feat.get("strategy_mode"),
-            "strategy_comment": feat.get("strategy_comment"),
+            "ai_error": "",
+            "ai_engine": "rule_only_v12.1",
+            "enforced_mode": None,
+            "strategy_mode": None,
+            "strategy_comment": None,
             "risk_tags": ",".join(risk_tags),
             "key_features": "|".join(key_features),
             "pattern_score": feat.get("pattern_score"),
@@ -844,10 +809,10 @@ def predict_route():
             "flow_strength": feat.get("flow_strength"),
             "flow_chaos_risk": feat.get("flow_chaos_risk"),
             "flow_direction": feat.get("flow_direction"),
-            "leader_road": feat.get("leader_road"),
-            "leader_signal": feat.get("leader_signal"),
-            "leader_confidence": feat.get("leader_confidence"),
-            "road_hit_rates": feat.get("road_hit_rates"),
+            "leader_road": leader_view["leader_road"],
+            "leader_signal": leader_view["leader_signal"],
+            "leader_confidence": leader_view["leader_confidence"],
+            "road_hit_rates": leader_view["road_hit_rates"],
             "ai_total": ai_total,
             "ai_correct": ai_correct,
             "ai_win_rate": ai_win_rate_val,
@@ -857,14 +822,18 @@ def predict_route():
             "adaptive_chaos_limit": feat.get("adaptive_chaos_limit"),
             "reverse_bet_applied": feat.get("reverse_bet_applied"),
             "reverse_bet_original_side": feat.get("reverse_bet_original_side"),
-            "future_P_pattern_score": future["P"].get("pattern_score"),
-            "future_B_pattern_score": future["B"].get("pattern_score"),
-            "future_P_flow_strength": future["P"].get("flow_strength"),
-            "future_B_flow_strength": future["B"].get("flow_strength"),
+            "future_P_pattern_score": (feat.get("future_scenarios") or {}).get("P", {}).get("pattern_score"),
+            "future_B_pattern_score": (feat.get("future_scenarios") or {}).get("B", {}).get("pattern_score"),
+            "future_P_flow_strength": (feat.get("future_scenarios") or {}).get("P", {}).get("flow_strength"),
+            "future_B_flow_strength": (feat.get("future_scenarios") or {}).get("B", {}).get("flow_strength"),
         }
 
         append_round_log_to_excel(row, current_shoe_id)
         excel_written = True
+
+        future = _require_dict(_require(feat, "future_scenarios"), "features.future_scenarios")
+        _require_dict(_require(future, "P"), "features.future_scenarios.P")
+        _require_dict(_require(future, "B"), "features.future_scenarios.B")
 
         response_payload: Dict[str, Any] = {
             "status": "ok",
@@ -873,13 +842,14 @@ def predict_route():
             "bet_unit": bet_unit,
             "bet_reason": bet_reason,
             "bet_side_display": bet_side_display,
+            "entry_type": entry_type,
             "analysis": analysis,
             "ai_ok": ai_ok,
-            "ai_error": ai_error,
-            "ai_engine": "rule+gpt_analysis",
-            "enforced_mode": next_mode,
-            "strategy_mode": feat.get("strategy_mode"),
-            "strategy_comment": feat.get("strategy_comment"),
+            "ai_error": "",
+            "ai_engine": "rule_only_v12.1",
+            "enforced_mode": None,
+            "strategy_mode": None,
+            "strategy_comment": None,
             "risk_tags": risk_tags,
             "key_features": key_features,
             "rounds_total": rounds_total,
@@ -920,12 +890,14 @@ def predict_route():
             "ai_recent_results": ai_recent_results,
             "rl_learning_enabled": rl_learning_enabled,
             "rl_reward": pipe.get("rl_reward"),
-            "mode_changed": mode_changed,
-            "mode_change_reason": mode_change_reason,
+            "mode_changed": False,
+            "mode_change_reason": None,
             "future_scenarios": future,
             "engine_version": features.ENGINE_VERSION,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "features_raw": feat,
+            "bet_tags": tags,
+            "bet_metrics": bet_metrics,
             "not_ready": False,
             "not_ready_reason": None,
         }
@@ -1005,9 +977,10 @@ def undo_last_round():
                 "small_road_matrix": road.small_road_matrix,
                 "cockroach_matrix": road.cockroach_matrix,
                 "big_tie_matrix": road.build_big_road_tie_matrix(),
-                "analysis": "UNDO_TO_EMPTY_STATE",
+                "analysis": "",
                 "ai_ok": False,
                 "ai_error": "UNDO_TO_EMPTY_STATE",
+                "ai_engine": "rule_only_v12.1",
                 "ui_ready": bool(_ui_ready_flag()),
                 "ui_ready_reason": _ui_ready_reason(),
                 "engine_version": features.ENGINE_VERSION,
@@ -1045,4 +1018,4 @@ def index():
 _bootstrap_on_startup()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)

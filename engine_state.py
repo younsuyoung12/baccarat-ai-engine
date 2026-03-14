@@ -3,7 +3,7 @@
 """
 engine_state.py
 ====================================================
-Baccarat Predictor AI Engine – 엔진 상태 저장/복원 모듈 (META-LEARNING REMOVED)
+Baccarat Predictor AI Engine – 엔진 상태 저장/복원 모듈 (RULE-ONLY)
 
 역할
 - Big Road(원본), 패턴 히스토리, Road Leader 상태를 JSON 파일로 저장/복원한다.
@@ -11,19 +11,35 @@ Baccarat Predictor AI Engine – 엔진 상태 저장/복원 모듈 (META-LEARNI
   road.recompute_all_roads()로 무결성 있게 재계산한다.
 
 중요 정책
-- 폴백 금지: 스키마/타입/필수키 무결성 검증은 엄격(누락/타입 위반 시 즉시 예외)
+- STRICT · NO-FALLBACK · FAIL-FAST
+- 스키마/타입/필수키/값 무결성 위반 시 즉시 예외
 - readiness 미달은 load 실패 사유가 아니다(UI/연속 운용을 위해).
+- trade readiness 와 ui readiness 는 분리한다.
 
-변경 요약 (2026-03-04) — OPTION B
+변경 요약 (2026-03-14) — v12.1
 ----------------------------------------------------
-1) ✅ meta_learning 완전 제거
+1) 상태 파일 무결성 검증 강화
+   - big_road 원소는 P/B/T만 허용
+   - pattern_history 원소는 finite number만 허용
+   - leader_state 는 dict 타입을 강제하고 road_leader.set_state()로 최종 검증
+2) 복원 후 파생 로드 무결성 검증 추가
+   - road.recompute_all_roads() 이후 road.validate_roadmap_integrity()를 호출
+   - 복원된 상태가 손상되었으면 즉시 예외
+3) runtime readiness 계약 강화
+   - get_ui_readiness / get_trade_readiness 에서도 big_road 계약을 검증
+   - 메모리 오염 상태를 조용히 통과시키지 않는다
+4) schema version 업
+   - SCHEMA_VERSION = 4
+   - load는 schema_version 1/2/3/4 지원
+   - v1/v2/v3 잔재 키(micro_learning/meta_learning)는 있으면 dict 타입만 검증 후 무시
+----------------------------------------------------
+
+(기존 변경 요약 2026-03-04)
+----------------------------------------------------
+1) meta_learning 완전 제거
    - import meta_learning 삭제
    - save/load에서 micro_learning/meta_learning 저장/복원 제거
-2) 상태 파일 스키마 버전 업
-   - SCHEMA_VERSION = 3
-   - load는 schema_version 1/2/3을 명시적으로 지원
-   - v1/v2에 존재할 수 있는 micro_learning/meta_learning 키는
-     "있으면 dict 타입만 검증" 후 무시(호환 목적)
+2) load는 schema_version 1/2/3/4를 명시적으로 지원
 ----------------------------------------------------
 
 (기존 변경 요약 2025-12-24)
@@ -39,9 +55,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import tempfile
-from typing import Any, Dict, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Tuple
 
 import pattern
 import road
@@ -51,9 +69,9 @@ logger = logging.getLogger(__name__)
 
 STATE_FILE = "engine_state.json"
 
-# v3: meta_learning 제거
-SCHEMA_VERSION = 3
-SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3)
+# v4: rule-only strict validation 강화
+SCHEMA_VERSION = 4
+SUPPORTED_SCHEMA_VERSIONS = (1, 2, 3, 4)
 
 # -----------------------------
 # UI 표시(패널 렌더) 최소 조건
@@ -63,11 +81,11 @@ MIN_UI_BIG_ROAD_LEN = 1  # BigRoad가 비어있지 않으면 UI는 표시 가능
 # -----------------------------
 # 트레이딩(진입 판단) 가능 최소 조건
 # -----------------------------
-MIN_BIG_ROAD_LEN = 5        # 최소 판수(원본 Big Road)
+MIN_BIG_ROAD_LEN = 5       # 최소 판수(원본 Big Road)
 
 # Leader는 "차단 조건"이 아니라 "워밍업 완료 기준"으로만 사용한다.
-MIN_LEADER_TOTAL = 5         # 리더 통계(최근 적중 추적) 워밍업 완료 기준
-REQUIRE_ANY_SIGNAL = True    # last_signals 중 하나라도 존재해야 함(워밍업 완료 기준)
+MIN_LEADER_TOTAL = 5       # 리더 통계(최근 적중 추적) 워밍업 완료 기준
+REQUIRE_ANY_SIGNAL = True  # last_signals 중 하나라도 존재해야 함(워밍업 완료 기준)
 
 
 class EngineStateError(RuntimeError):
@@ -90,6 +108,17 @@ def _as_int(value: Any, *, key: str) -> int:
     if isinstance(value, float) and value.is_integer():
         return int(value)
     raise TypeError(f"{key} must be int, got {type(value).__name__}")
+
+
+def _as_finite_float(value: Any, *, key: str) -> float:
+    if isinstance(value, bool):
+        raise TypeError(f"{key} must be float, got bool")
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"{key} must be float, got {type(value).__name__}")
+    x = float(value)
+    if not math.isfinite(x):
+        raise ValueError(f"{key} must be finite")
+    return x
 
 
 def _require_dict(state: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -120,6 +149,31 @@ def _optional_dict_strict(state: Dict[str, Any], key: str) -> None:
     val = state[key]
     if not isinstance(val, dict):
         raise TypeError(f"state[{key}] must be dict if present, got {type(val).__name__}")
+
+
+def _validate_big_road_list(value: Any, *, key: str) -> List[str]:
+    if not isinstance(value, list):
+        raise TypeError(f"{key} must be list, got {type(value).__name__}")
+
+    out: List[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            raise TypeError(f"{key}[{idx}] must be str, got {type(item).__name__}")
+        s = item.strip().upper()
+        if s not in ("P", "B", "T"):
+            raise ValueError(f"{key}[{idx}] invalid value: {item!r} (allowed: 'P','B','T')")
+        out.append(s)
+    return out
+
+
+def _validate_pattern_history_list(value: Any, *, key: str) -> List[float]:
+    if not isinstance(value, list):
+        raise TypeError(f"{key} must be list, got {type(value).__name__}")
+
+    out: List[float] = []
+    for idx, item in enumerate(value):
+        out.append(_as_finite_float(item, key=f"{key}[{idx}]"))
+    return out
 
 
 def _serialize_leader_state(leader_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -201,6 +255,27 @@ def _extract_any_signal_exists(leader_state: Any) -> bool:
     return False
 
 
+def _get_runtime_big_road_strict() -> List[str]:
+    big_road = getattr(road, "big_road", None)
+    return _validate_big_road_list(big_road, key="road.big_road")
+
+
+def _validate_restored_runtime_integrity() -> None:
+    if not hasattr(road, "recompute_all_roads"):
+        raise EngineStateError("road.recompute_all_roads missing (contract violation)")
+
+    road.recompute_all_roads()
+
+    if not hasattr(road, "validate_roadmap_integrity"):
+        raise EngineStateError("road.validate_roadmap_integrity missing (contract violation)")
+
+    ok, reason = road.validate_roadmap_integrity()
+    if not isinstance(ok, bool):
+        raise EngineStateError("road.validate_roadmap_integrity must return (bool, str)")
+    if not ok:
+        raise EngineStateError(f"restored roadmap integrity failed: {reason}")
+
+
 # -----------------------------
 # UI 표시 준비도 (패널 렌더)
 # -----------------------------
@@ -209,7 +284,8 @@ def get_ui_readiness() -> Tuple[bool, str]:
     UI 표시를 위한 최소 준비도.
     - 베팅 준비도와 분리한다.
     """
-    big_road_len = len(getattr(road, "big_road", []) or [])
+    big_road = _get_runtime_big_road_strict()
+    big_road_len = len(big_road)
     if big_road_len < MIN_UI_BIG_ROAD_LEN:
         return False, f"BigRoad empty: {big_road_len} < {MIN_UI_BIG_ROAD_LEN}"
     return True, "READY"
@@ -222,12 +298,14 @@ def get_trade_readiness() -> Tuple[bool, str]:
     """
     현재 메모리 상태가 '분석 기반 진입 판단(=베팅)'을 수행할 준비가 되었는지 점검한다.
 
-    ✅ 정책(2025-12-24):
+    정책:
     - MIN_BIG_ROAD_LEN(기본 5)만 충족하면 트레이딩은 READY로 본다.
     - Leader 통계/시그널은 "워밍업 완료 기준"으로만 사용하며,
       부족하더라도 트레이딩을 차단하지 않는다(Deadlock 제거).
     """
-    big_road_len = len(getattr(road, "big_road", []) or [])
+    big_road = _get_runtime_big_road_strict()
+    big_road_len = len(big_road)
+
     if big_road_len < MIN_BIG_ROAD_LEN:
         return False, f"BigRoad insufficient: {big_road_len} < {MIN_BIG_ROAD_LEN}"
 
@@ -275,21 +353,38 @@ def assert_ready_or_raise() -> None:
 
 
 def save_engine_state(*, last_decision: Dict[str, Any] | None = None) -> None:
-    leader_state = _serialize_leader_state(road_leader.get_state())
+    big_road = _get_runtime_big_road_strict()
+    pattern_history = _validate_pattern_history_list(
+        getattr(pattern, "pattern_score_history", None),
+        key="pattern.pattern_score_history",
+    )
+
+    leader_state = road_leader.get_state()
+    if not isinstance(leader_state, dict):
+        raise EngineStateError(f"road_leader.get_state() must return dict, got {type(leader_state).__name__}")
+    leader_state = _serialize_leader_state(leader_state)
+
+    if last_decision is None:
+        last_decision_obj: Dict[str, Any] = {}
+    elif isinstance(last_decision, dict):
+        last_decision_obj = last_decision
+    else:
+        raise TypeError(f"last_decision must be dict or None, got {type(last_decision).__name__}")
 
     ui_ok, ui_reason = get_ui_readiness()
     trade_ok, trade_reason = get_trade_readiness()
 
     state: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
+        "saved_at_utc": datetime_utc_iso(),
 
         # 원본 Big Road(타이 포함)만이 "정답 데이터"
-        "big_road": list(road.big_road),
+        "big_road": list(big_road),
 
         # 파생 로드는 저장하지 않는다(복원 후 recompute_all_roads()로 무결성 재계산).
-        "pattern_history": list(pattern.pattern_score_history),
+        "pattern_history": list(pattern_history),
 
-        # ✅ meta_learning 제거: micro_learning/meta_learning 저장 안 함
+        # meta_learning 제거
         "leader_state": leader_state,
 
         # 관측용(분리)
@@ -300,7 +395,7 @@ def save_engine_state(*, last_decision: Dict[str, Any] | None = None) -> None:
         "engine_ready": bool(trade_ok),
         "engine_ready_reason": str(trade_reason),
 
-        "last_decision": last_decision or {},
+        "last_decision": last_decision_obj,
     }
 
     _atomic_write_json(STATE_FILE, state)
@@ -350,23 +445,25 @@ def load_engine_state(*, strict_ready: bool = False) -> None:
         if "entry_momentum" in state:
             _as_int(state["entry_momentum"], key="entry_momentum")
 
-    # ✅ 호환: 구버전(state v1/v2)에 남아있는 meta_learning 관련 키는
-    # "있으면 dict 타입만 검증" 후 무시한다.
+    # 구버전 잔재 키는 있으면 dict 타입만 검증 후 무시
     _optional_dict_strict(state, "micro_learning")
     _optional_dict_strict(state, "meta_learning")
 
-    # 필수 키 검증 (파일이 존재하는데 누락/타입 오류면 즉시 예외)
-    big_road_list = _require_list(state, "big_road")
-    pattern_hist = _require_list(state, "pattern_history")
+    # 필수 키 검증
+    big_road_list_raw = _require_list(state, "big_road")
+    pattern_hist_raw = _require_list(state, "pattern_history")
     leader_state = _require_dict(state, "leader_state")
+
+    big_road_list = _validate_big_road_list(big_road_list_raw, key="state.big_road")
+    pattern_hist = _validate_pattern_history_list(pattern_hist_raw, key="state.pattern_history")
 
     # ---- 원본 상태 복원 ----
     road.big_road = list(big_road_list)
     pattern.pattern_score_history = list(pattern_hist)
     road_leader.set_state(leader_state)
 
-    # ---- 파생 로드맵 재계산(무결성 유지) ----
-    road.recompute_all_roads()
+    # ---- 파생 로드맵 재계산 + 무결성 검증 ----
+    _validate_restored_runtime_integrity()
 
     # ---- readiness는 load 실패 사유가 아니다 ----
     ui_ok, ui_reason = get_ui_readiness()
@@ -379,3 +476,7 @@ def load_engine_state(*, strict_ready: bool = False) -> None:
         "[ENGINE-STATE] loaded(v%d): ui_ready=%s(%s) trade_ready=%s(%s) big_road_len=%d",
         ver_i, ui_ok, ui_reason, trade_ok, trade_reason, len(road.big_road)
     )
+
+
+def datetime_utc_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
